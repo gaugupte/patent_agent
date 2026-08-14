@@ -1,0 +1,18 @@
+os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+os.environ.setdefault("LANGSMITH_TRACING", "true")
+os.environ.setdefault("LANGCHAIN_PROJECT", "lg-vllm-prod")
+os.environ.setdefault("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
+os.environ.setdefault(
+    "LANGSMITH_API_KEY", "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"
+)
+
+
+os.environ["HUGGINGFACEHUB_API_TOKEN"] = (
+    "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"  # gg-test-15-02
+)
+os.environ["HUGGINGFACEHUB_API_TOKEN"] = (
+    "postgresql://user:password@localhost:5432/langgraph_db"  # gg-test-15-02
+)
+
+os.environ.setdefault("MODEL_SERVER_URL", "http://localhost:8000/predict")
+os.environ.setdefault("MODEL_NAME", "meta-llama/LlamaGuard-7b")
