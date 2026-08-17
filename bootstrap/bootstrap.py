@@ -22,6 +22,7 @@ from langchain_openai import ChatOpenAI
 
 from config.config import ApplicationContext, Settings
 from graph.graph_builder import build_graph
+from services.pdf_service import PDFService
 from services.utils import AuditService, init_db
 
 
@@ -87,6 +88,7 @@ class ApplicationBootstrap:
         graph = build_graph()
         db_engine = init_db()
         audit = AuditService(db_engine)
+        pdf_service = PDFService(output_dir="output")
         return ApplicationContext(
             settings=settings,
             llm=llm,
@@ -98,4 +100,5 @@ class ApplicationBootstrap:
             graph=graph,
             audit=audit,
             db_engine=db_engine,
+            pdf_service=pdf_service,
         )

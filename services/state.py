@@ -11,9 +11,19 @@ import operator
 from typing import Annotated, Any, Optional
 
 from openai import BaseModel
+from models.patent_models import InventionRepresentation
 from typing_extensions import TypedDict
 
+from models.patent_models import KeywordAnalysis
 # from typing_extensions import TypedDict
+
+
+class PatentState(TypedDict, total=False):
+    session_id: str
+    idf_text: str
+    invention: InventionRepresentation
+    pdf_path: str
+    keywords: KeywordAnalysis
 
 
 class RuntimeContext(TypedDict):

@@ -69,6 +69,10 @@ class AuditService:
 
     def log_model_call(self, session_id, function_name, prompt, answer):
         try:
+            if hasattr(answer, "model_dump_json"):
+                answer = answer.model_dump_json()
+            elif not isinstance(answer, str):
+                answer = json.dumps(answer, default=str)
             db = self.SessionLocal()  # does not create a new database connection each time. The underlying SQLAlchemy engine/pool handles that.
             record = AuditLog(
                 id=str(uuid.uuid4()),

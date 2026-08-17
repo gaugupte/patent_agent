@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 
 # from xxlimited import Str
 from fastapi import FastAPI, Request
-from httpcore import request
+from fastapi import Request, UploadFile, File, Form
 
 from bootstrap.bootstrap import ApplicationBootstrap
 from config import config
@@ -45,24 +45,27 @@ async def health():
 
 @app.post("/predict")
 # async def predict(request: Request, body: PredictRequest):
-async def predict(request: Request, body: PredictRequest):
+async def predict(
+    request: Request,
+    session_id: str = Form(...),
+    idf_file: UploadFile = File(...),
+):
     try:
-        print(f"Print 1: {body}")
         context = request.app.state.context
-        print(f"Print 2: {body}")
+        # Read IDF text file
+        idf_bytes = await idf_file.read()
+        idf_text = idf_bytes.decode("utf-8")
         state = {
-            "question": body.question,
-            "session_id": body.session_id,
-            "answer": None,
+            "idf_text": idf_text,
+            "session_id": session_id,
+            "invention": None,
         }
-        print(f"Print 3: {body}")
-        result = state  # Placeholder for the actual prediction logic using the context and state.
         config = {
-            "configurable": {"thread_id": body.session_id},
-            "context": app.state.context,
+            "configurable": {"thread_id": session_id},
+            "context": context,
         }
-
-        result = request.app.state.context.graph.invoke(state, config=config)
+        result = context.graph.invoke(state, config=config)
+        print(result)
         return result
     except Exception as e:
         import traceback

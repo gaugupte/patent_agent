@@ -1,72 +1,106 @@
 """
 /**
 * ? Author: Gautam
-* ? Date: 2026-02-20
+* ? Date: 2026-07-14
 * ? Description:  file has acutually the nodes for the graph, defining the logic for intent routing, RAG decision-making, and parallel execution. It includes functions for fast intent routing, LLM-based intent routing, and conditional routing based on confidence scores. The nodes are designed to be used within the state graph built in graph_builder.py.
 * ? Usage:  graph_builder.py imports this file to access the node functions when constructing the state graph for the application.
 */
 """
 
-from inspect import currentframe
-
+import inspect
+from services.state import PatentState
+from models.patent_models import InventionRepresentation, KeywordAnalysis
 from langchain_core.runnables import RunnableConfig
 
 from config.config import ApplicationContext, Settings
-from services.state import GraphState, IntentResult
 
 
-# 1. intent router
-def fast_intent_router(state: GraphState):
-    # retuns if billing or account intent is detected, otherwise returns unknown intent
-    q = state.get("question", "").lower()
-    BILLING_WORDS = {
-        "billing",
-        "invoice",
-        "payment",
-        "charge",
-        "refund",
-        "subscription",
-    }
-    ACCOUNT_WORDS = {"account", "profile", "settings", "preferences"}
-    billing_score = sum(word in q for word in BILLING_WORDS)
-    account_score = sum(word in q for word in ACCOUNT_WORDS)
+DECOMPOSE_PROMPT = """
+You are a patent invention analysis assistant.
 
-    if billing_score > 0:
-        return {"intent": "billing", "confidence": min(0.95, 0.7 + billing_score * 0.1)}
-    if account_score > 0:
-        return {"intent": "account", "confidence": min(0.95, 0.7 + account_score * 0.1)}
-    return {"intent": "unknown", "confidence": 0.3}
+Your task is to analyze an Invention Disclosure Form (IDF) and
+convert the invention into a structured technical representation.
+
+Separate the invention into exactly three categories:
+
+1. Structural features
+   - Physical components
+   - System components
+   - Sensors
+   - Modules
+   - Data/storage components
+   - Communication components
+   - Relationships between components
+
+2. Procedural/process features
+   - Operational steps
+   - Sequence of operations
+   - Data processing steps
+   - Detection/measurement steps
+   - Decision steps
+   - Control/adaptation steps
+
+3. Functional features
+   - What the invention does
+   - Technical capabilities
+   - Technical effects/functions
+   - Relationships between inputs and resulting functions
+
+IMPORTANT:
+
+- Extract information from the IDF.
+- Do not invent technical features that are not reasonably supported
+  by the IDF.
+- Preserve technically meaningful details.
+- Do not classify a function merely as structural.
+- Do not classify a physical component merely as a function.
+- A feature may have relationships with other features.
+- Separate distinct technical features rather than combining everything
+  into one large statement.
+- Assign stable IDs:
+    Structural: SF-01, SF-02, ...
+    Procedural: PF-01, PF-02, ...
+    Functional: FF-01, FF-02, ...
+"""
+
+KEYWORDS_PROMPT = """
+You are a patent prior-art search strategist.
+
+Your task is to analyze a structured representation of an invention
+and generate terminology that can be used to search patent literature.
+
+For EACH feature:
+
+1. Identify the primary technical keywords.
+2. Identify technically meaningful synonyms.
+3. Identify alternative terminology commonly used in patents.
+
+IMPORTANT:
+
+- Focus on technically meaningful terminology.
+- Prefer patent/technical terminology over generic English words.
+- Do not generate unrelated words merely because they are semantically similar.
+- Preserve the meaning of the original feature.
+- Do not introduce technical concepts that are not supported by the feature.
+- Include singular/plural variants only when useful.
+- Include abbreviations where they are commonly used.
+- Include terminology that a patent examiner or patent practitioner
+  might reasonably encounter.
+
+Generate keywords independently for:
+- Structural features
+- Procedural/process features
+- Functional features
+
+Then create a consolidated list containing the most useful
+unique search terms across all three categories.
+
+The feature_id MUST be preserved exactly.
+"""
 
 
-# 2. Conditional Edge
-def route_after_intent(state: GraphState):
-    if state["confidence"] >= 0.8:
-        return "fast_path"
-    return "llm_intent_router"
-
-
-# 2. Conditional Edge
-# def llm_intent_router(state: GraphState, config: RunnableConfig):
-#     # 1. Access runtime variables safely from the configurable dictionary
-#     configurable = config.get("configurable", {})
-#     llm = configurable.get("llm")
-
-#     if not llm:
-#         raise ValueError("LLM instance was not passed in the runtime config.")
-
-#     # 2. Force structured JSON output matching your Pydantic schema
-#     structured_llm = llm.with_structured_output(IntentResult)
-
-#     # 3. Invoke model and update state
-#     result = structured_llm.invoke(state["query"])
-
-#     # Returning a dictionary modifies only these specific keys in the state
-#     return {"intent": result.intent, "confidence": result.confidence}
-
-
-# 2. Conditional Edge
-def llm_intent_router(state: GraphState, config: RunnableConfig):
-
+def decompose_invention(state: PatentState, config: RunnableConfig) -> dict:
+    idf_text = state["idf_text"]
     configurable = config.get("configurable", {})
     context = configurable.get("context")
     thread_id = configurable.get("thread_id")
@@ -74,149 +108,60 @@ def llm_intent_router(state: GraphState, config: RunnableConfig):
     llm = context.llm
     if not llm:
         raise ValueError("LLM instance was not passed in the runtime config.")
+    structured_llm = llm.with_structured_output(InventionRepresentation)
 
-    # 2. Force structured JSON output matching your Pydantic schema
-    structured_llm = llm.with_structured_output(IntentResult)
-    import inspect
-
-    # 3. Invoke model and update state
+    prompt = f"""
+    {DECOMPOSE_PROMPT}
+    Analyze the following IDF.
+    --- IDF START ---
+    {idf_text}
+    --- IDF END ---
+    """
+    result = structured_llm.invoke(prompt)
     function_name = inspect.currentframe().f_code.co_name
-    result = structured_llm.invoke(state["question"])
-    audit.log_model_call(thread_id, function_name, state["question"], result.response)
-    print(result.response)
-    # Returning a dictionary modifies only these specific keys in the state
-    # return {"intent": result.intent, "confidence": result.confidence}
-    return {
-        "intent": result.intent,
-        "confidence": result.confidence,
-        "response": result.response,
-    }
+    audit.log_model_call(thread_id, function_name, state["idf_text"], result)
+
+    return {"invention": result}
 
 
-# # 7. Determine Whether RAG Is Needed
-# def rag_decision_node(state: GraphState):
-#     rag_terms = ["policy", "refund", "cancel", "charged twice"]
-#     user_query = state.get("query", "") or ""
-#     requires_rag = any(term in user_query.lower() for term in rag_terms)
-#     return {"requires_rag": requires_rag}
+def create_invention_pdf(state: PatentState, config: RunnableConfig):
+    configurable = config.get("configurable", {})
+    context = configurable.get("context")
+
+    pdf_path = context.pdf_service.create_invention_pdf(
+        session_id=state["session_id"],
+        invention=state["invention"],
+    )
+    return {"pdf_path": pdf_path}
 
 
-# # 8. Parallel Execution Using Send API
-# def parallel_router(state: GraphState):
-#     # Create an empty list to collect our parallel routing instructions
-#     sends = []
+def generate_keywords(state: PatentState, config: RunnableConfig) -> dict:
 
-#     # 1. Always trigger the account lookup process in parallel
-#     # Pass a specific piece of data (e.g., user_id) or a shallow copy of the required fields
-#     sends.append(Send("account_lookup", {"query": state["query"]}))
+    configurable = config.get("configurable", {})
+    context = configurable.get("context")
+    thread_id = configurable.get("thread_id")
+    audit = context.audit
+    llm = context.llm
 
-#     # 2. Conditionally trigger the RAG lookup process in parallel
-#     if state.get("requires_rag"):
-#         sends.append(Send("rag_lookup", {"query": state["query"]}))
+    if not llm:
+        raise ValueError("LLM instance was not passed in the runtime config.")
 
-#     # Return the list of Send objects to fork the execution graph
-#     return sends
-
-
-# # 9. Account Node
-
-# from langchain_core.runnables import RunnableConfig
-
-
-# def account_lookup_node(state: GraphState, config: RunnableConfig):
-#     # 1. Safely retrieve the tool from the execution context/config
-#     tool = config.get("configurable", {}).get("account_tool")
-
-#     if not tool:
-#         return {"account_error": "System Configuration Error: account_tool missing."}
-
-#     try:
-#         # Try running the tool
-#         account_data = tool.invoke(state["query"])
-#         return {"account_data": account_data, "account_error": None}
-
-#     except Exception as e:
-#         # Catch any API/Database failures and save the error message
-#         return {
-#             "account_data": None,
-#             "account_error": f"Failed to fetch account: {str(e)}",
-#         }
-
-
-# #  from langgraph.prebuilt import RetryPolicy
-
-# # # Retry up to 3 times, waiting longer between each try (exponential backoff)
-# # my_retry_policy = RetryPolicy(max_attempts=3, backoff_factor=2.0)
-
-# # # Apply it specifically to your account node
-# # builder.add_node(
-# #     "account_lookup",
-# #     account_lookup_node,
-# #     retry=my_retry_policy
-# # )
-
-# # 10. RAG Node
-
-# from langchain_core.runnables import RunnableConfig
-
-
-# def rag_lookup_node(state: GraphState, config: RunnableConfig):
-#     # 1. Extract the retriever safely from the LangGraph config context
-#     retriever = config.get("configurable", {}).get("retriever")
-
-#     if not retriever:
-#         # Graceful error handling if the retriever was forgotten at runtime
-#         return {
-#             "rag_error": "System Error: Retriever tool is missing from configuration."
-#         }
-
-#     try:
-#         # 2. Invoke the retriever using the query from the state
-#         docs = retriever.invoke(state["query"])
-
-#         # 3. Return ONLY the state update dictionary
-#         return {"rag_context": docs, "rag_error": None}
-
-#     except Exception as e:
-#         # Catch vector database timeouts or network issues safely
-#         return {"rag_context": [], "rag_error": f"RAG Lookup failed: {str(e)}"}
-
-
-# # 11. Billing Agent
-
-
-# class BillingResponse(BaseModel):
-#     answer: str
-
-
-# from langchain_core.runnables import RunnableConfig
-
-
-# def billing_agent_node(state: GraphState, config: RunnableConfig):
-#     # 1. Pull the LLM out of the standard LangGraph config
-#     llm = config.get("configurable", {}).get("llm")
-#     if not llm:
-#         return {"response": "System Error: LLM is not configured."}
-#     # 2. Attach your structured schema format
-#     structured_llm = llm.with_structured_output(BillingResponse)
-#     # 3. Build the prompt using data gathered from your parallel steps
-#     # We use .get() with fallback values in case a parallel step failed
-#     prompt = f""""""
-#     Account Data:
-#     {state.get("account_data", "No account data available.")}
-#     Knowledge:
-#     {state.get("rag_context", "No relevant knowledge articles found.")}
-#     User:
-#     {state.get("query")}
-#     """
-#     try:
-#         # 4. Invoke the model
-#         result = structured_llm.invoke(prompt)
-
-#         # 5. Return ONLY the state updates as a dictionary
-#         return {"response": result.answer}
-
-#     except Exception as e:
-#         return {
-#             "response": f"Sorry, I encountered an issue generating your response: {str(e)}"
-#         }
+    invention = state["invention"]
+    structured_llm = llm.with_structured_output(KeywordAnalysis)
+    prompt = f"""
+    {DECOMPOSE_PROMPT}
+    Here is the structured representation of the invention:
+    --- INVENTION SUMMARY ---
+    {invention.invention_summary}
+    --- STRUCTURAL FEATURES ---
+    {invention.structural_features}
+    --- PROCEDURAL FEATURES ---
+    {invention.procedural_features}
+    --- FUNCTIONAL FEATURES ---
+    {invention.functional_features}
+    """
+    result = structured_llm.invoke(prompt)
+    function_name = inspect.currentframe().f_code.co_name
+    audit.log_model_call(thread_id, function_name, prompt, result)
+    print("THIS IS THE RESULT FROM KEYWORDS NODE {result}")
+    return {"keywords": result}
