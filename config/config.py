@@ -13,7 +13,7 @@ from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
 from services.utils import AuditService
-from services.pdf_service import PDFService
+from services.pdf_service_old import PDFService
 
 
 class Settings:
@@ -35,9 +35,7 @@ class Settings:
     os.environ.setdefault("LANGSMITH_TRACING", "true")
     os.environ.setdefault("LANGCHAIN_PROJECT", "lg-template")
     os.environ.setdefault("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
-    os.environ.setdefault(
-        "LANGSMITH_API_KEY", "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"
-    )
+    os.environ.setdefault("LANGSMITH_API_KEY", "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")
     # os.environ["HUGGINGFACEHUB_API_TOKEN"] = (
     #     "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"  # gg-test-15-02 )
     # )
@@ -55,7 +53,7 @@ class ApplicationContext:
     graph: CompiledStateGraph
     audit: AuditService
     db_engine: object  # Add this line to include the database engine in the context
-    pdf_service: PDFService
+    report_service: PDFService
 
 
 class PredictRequest(BaseModel):

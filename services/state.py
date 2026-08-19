@@ -11,10 +11,10 @@ import operator
 from typing import Annotated, Any, Optional
 
 from openai import BaseModel
-from models.patent_models import InventionRepresentation
+from models.patent_models import InventionRepresentation, KeywordAnalysis, CPCAnalysis
 from typing_extensions import TypedDict
 
-from models.patent_models import KeywordAnalysis
+
 # from typing_extensions import TypedDict
 
 
@@ -24,6 +24,8 @@ class PatentState(TypedDict, total=False):
     invention: InventionRepresentation
     pdf_path: str
     keywords: KeywordAnalysis
+    report_path: str
+    cpc_analysis: CPCAnalysis
 
 
 class RuntimeContext(TypedDict):
@@ -38,10 +40,6 @@ class IntentResult(BaseModel):
 
 
 class GraphState(TypedDict):
-    question: str
-    session_id: str
-    answer: str
-    query: str
     intent: str | None
     confidence: float
 
@@ -51,25 +49,11 @@ class GraphState(TypedDict):
 
     # Parallel destination targets (safe if distinct, but explicitly typed here)
     account_data: dict | None
-    rag_context: (
-        list[Any] | None
-    )  # Adjust to List[Document] depending on your retriever output
-
-    # CRITICAL FIX: Add explicit fields for the errors your parallel nodes return
-    account_error: str | None
-    rag_error: str | None
+    rag_context: list[Any] | None  # Adjust to List[Document] depending on your retriever output
 
     # CRITICAL FIX: If parallel branches track tool counts or usage concurrently,
     # you MUST use operator.add so they sum together instead of overwriting each other!
     tool_calls: Annotated[int, operator.add]
     token_usage: Annotated[int, operator.add]
 
-    requires_rag: bool
-    requires_guardrails: bool
-    latency_budget: float
-    token_budget: int
     max_tool_calls: int
-    response: str | None
-
-    # Safe multi-branch tracking using our custom dictionary reducer
-    # telemetry: Annotated[Dict[str, Any], merge_dicts]

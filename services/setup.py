@@ -9,12 +9,23 @@
 """
 
 * ? additional information regarding how to start & and use this on local
+ollama run mistral
 uvicorn app:app --reload --port 8000 #-- to start the server
+curl.exe -X POST "http://localhost:8000/predict" -F "session_id=test-001" -F "idf_file=@input/idf_file.txt"
+
+
 
 * ? single line curl command to test the endpoint
 curl -X POST http://127.0.0.1:8000/predict -H "Content-Type: application/json" -d "{\"question\":\"What is LangGraph?\",\"session_id\":\"ABC123\"}"
 
-curl -X POST http://127.0.0.1:8000/predict -H "Content-Type: application/json" -d "{\"idf_text\":\"Invention Title:
+python -m ingestion.cpc_ingest --directory "E:\path\to\cpc_2026_08"
+
+curl -X POST "http://localhost:8000/predict" ^
+  -H "Content-Type: application/json" ^
+  --data-binary "@input_file.txt"
+
+curl -X POST http://127.0.0.1:8000/predict -H "Content-Type: application/json" ^
+-d "{\"idf_text\":\"Invention Title:
 Smart Hydration Bottle with Adaptive Fluid-Intake Monitoring
 
 Technical Field:
@@ -47,8 +58,11 @@ curl -X POST http://127.0.0.1:8000/predict ^
 -H "Content-Type: application/json" ^
 -d "{\"question\":\"What is LangGraph?\",\"session_id\":\"ABC123\"}"
 
+# ****************************************************************************************************************************************
+cmd+shift+P -> preferences -> User Settings(json) "ruff.args": ["--line-length=120"],
 """
 
+# ****************************************************************************************************************************************
 """
 
 

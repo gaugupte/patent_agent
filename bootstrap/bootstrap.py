@@ -4,6 +4,14 @@
 * ? Date: 2026-02-20
 * ? Description:  this file is responsible for bootstrapping the application by initializing the necessary components and creating the application context. It sets up the LLM, embeddings, vector store, runtime, checkpointer, graph, and audit service based on the provided settings. The ApplicationBootstrap class provides a build method that returns an instance of ApplicationContext containing all the initialized components.
 * ? Usage:  The ApplicationBootstrap class can be used to create an instance of ApplicationContext
+
+* TODO: Right now we're doing 10 candidates per feature + 15 consolidated candidates. That's deliberately simple for the first implementation.
+  TODO: Once we see actual results from your hydration-bottle IDF, we can tune:
+        k
+        feature weighting
+        duplicate handling
+        CPC hierarchy handling
+        LLM selection threshold
 */
 """
 
@@ -18,12 +26,17 @@
 # from embeddings.embedding_factory import create_embeddings
 # from langchain.agents.middleware import wrap_model_call, wrap_tool_call
 
+from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI
 
 from config.config import ApplicationContext, Settings
 from graph.graph_builder import build_graph
-from services.pdf_service import PDFService
+from services.embedding_service import init_embeddings
+from services.report_service import ReportService
 from services.utils import AuditService, init_db
+
+CPC_COLLECTION = "cpc_2026_08"
+CPC_CHROMA_PATH = "./data/chroma"
 
 
 def create_llm(settings: Settings):
@@ -33,22 +46,14 @@ def create_llm(settings: Settings):
     # llm = create_llm(settings)
     # llm = llm.with_middleware(model_logging, tool_error_handler)
 
-    print("llm created")
     llm = ChatOpenAI(
         base_url="http://localhost:11434/v1",  # Ollama's default local port
         api_key="ollama",  # Required placeholder string
         model="mistral",  # Matches the model name from step 2
         temperature=0,
     )
+    print("llm created")
     return llm
-
-
-def create_embeddings(settings: Settings):
-    # TODO: Add the actual implementation for creating the embeddings based on the settings.
-    # This function should initialize and return an instance of the embeddings used in the application.
-
-    print("Embeddings created")
-    return "Embeddings created"
 
 
 def build_checkpointer(settings: Settings):
@@ -76,19 +81,29 @@ def create_runtime(settings: Settings):
     return "Runtime created"
 
 
+def init_cpc_vector_store(embeddings):
+
+    return Chroma(
+        collection_name=CPC_COLLECTION,
+        persist_directory=CPC_CHROMA_PATH,
+        embedding_function=embeddings,
+    )
+
+
 class ApplicationBootstrap:
     def build() -> ApplicationContext:
         settings = Settings()
         llm = create_llm(settings)
-        embeddings = create_embeddings(settings)
-        vector_store = create_vectorstore(settings, embeddings)
+        embeddings = init_embeddings()
+        vector_store = init_cpc_vector_store(embeddings)
         # retriever = vector_store.as_retriever()
         runtime = create_runtime(settings)
         checkpointer = build_checkpointer(settings)
         graph = build_graph()
         db_engine = init_db()
         audit = AuditService(db_engine)
-        pdf_service = PDFService(output_dir="output")
+        # pdf_service = PDFService(output_dir="output")
+        report_service = ReportService(output_dir="./data/reports")
         return ApplicationContext(
             settings=settings,
             llm=llm,
@@ -100,5 +115,5 @@ class ApplicationBootstrap:
             graph=graph,
             audit=audit,
             db_engine=db_engine,
-            pdf_service=pdf_service,
+            report_service=report_service,
         )
