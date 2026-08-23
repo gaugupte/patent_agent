@@ -23,7 +23,15 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import RetryPolicy
 
-from graph.nodes import create_invention_pdf, decompose_invention, generate_keywords, lookup_cpc, create_client_report
+from graph.nodes import (
+    create_invention_pdf,
+    decompose_invention,
+    generate_keywords,
+    lookup_cpc,
+    generate_uspto_queries,
+    create_client_report,
+    generate_espacenet_queries,
+)
 from services.state import PatentState
 
 
@@ -63,13 +71,31 @@ def build_graph():
     # builder.add_node("create_invention_pdf", create_invention_pdf)
     builder.add_node("generate_keywords", generate_keywords)
     builder.add_node("lookup_cpc", lookup_cpc)
+    builder.add_node(
+        "generate_uspto_queries",
+        generate_uspto_queries,
+    )
+    builder.add_node(
+        "generate_espacenet_queries",
+        generate_espacenet_queries,
+    )
     builder.add_node("create_client_report", create_client_report)
 
     builder.add_edge(START, "decompose_invention")
     # builder.add_edge("decompose_invention", "create_invention_pdf")
     builder.add_edge("decompose_invention", "generate_keywords")
     builder.add_edge("generate_keywords", "lookup_cpc")
-    builder.add_edge("lookup_cpc", "create_client_report")
+    # builder.add_edge("lookup_cpc", "create_client_report")
+    builder.add_edge("lookup_cpc", "generate_uspto_queries")
+    # builder.add_edge("generate_uspto_queries", "create_client_report")
+    builder.add_edge(
+        "generate_uspto_queries",
+        "generate_espacenet_queries",
+    )
+    builder.add_edge(
+        "generate_espacenet_queries",
+        "create_client_report",
+    )
     builder.add_edge("create_client_report", END)
     graph = builder.compile(checkpointer=checkpointer, store=store)
 

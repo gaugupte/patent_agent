@@ -11,7 +11,13 @@ import operator
 from typing import Annotated, Any, Optional
 
 from openai import BaseModel
-from models.patent_models import InventionRepresentation, KeywordAnalysis, CPCAnalysis
+from models.patent_models import (
+    InventionRepresentation,
+    KeywordAnalysis,
+    CPCAnalysis,
+    USPTOQueryAnalysis,
+    EspacenetQueryAnalysis,
+)
 from typing_extensions import TypedDict
 
 
@@ -26,6 +32,8 @@ class PatentState(TypedDict, total=False):
     keywords: KeywordAnalysis
     report_path: str
     cpc_analysis: CPCAnalysis
+    uspto_queries: USPTOQueryAnalysis
+    espacenet_queries: EspacenetQueryAnalysis
 
 
 class RuntimeContext(TypedDict):

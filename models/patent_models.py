@@ -64,3 +64,51 @@ class CPCAnalysis(BaseModel):
     candidates: list[CPCCandidate] = Field(
         description="Relevant CPC classifications selected from the retrieved candidates"
     )
+
+
+# ******************************************************************************************************************************************
+
+
+class USPTOQuery(BaseModel):
+    query_name: str = Field(description="Name of the USPTO search query")
+
+    query: str = Field(description="USPTO Patent Public Search query string")
+
+    purpose: str = Field(description="Purpose of the search query")
+
+    feature_ids: list[str] = Field(default_factory=list, description="Invention features targeted by this query")
+
+    priority: str = Field(description="PRIMARY or SECONDARY")
+
+
+class USPTOQueryAnalysis(BaseModel):
+    queries: list[USPTOQuery] = Field(description="USPTO-ready search queries")
+
+
+# ******************************************************************************************************************************************
+
+
+# class EspacenetQuery(BaseModel):
+#     query_name: str = Field(description="Name of the Espacenet search query")
+#     query: str = Field(description="Espacenet Smart Search query string")
+#     purpose: str = Field(description="Purpose of the search query")
+#     feature_ids: list[str] = Field(default_factory=list, description="Invention features targeted by this query")
+#     priority: str = Field(description="PRIMARY or SECONDARY")
+
+
+# class EspacenetQueryAnalysis(BaseModel):
+#     queries: list[EspacenetQuery] = Field(description="Espacenet-ready search queries")
+
+
+class EspacenetQuery(BaseModel):
+    query_name: str
+    query: str
+    purpose: str
+    priority: str
+
+
+class EspacenetQueryAnalysis(BaseModel):
+    queries: list[EspacenetQuery]
+
+
+# ******************************************************************************************************************************************

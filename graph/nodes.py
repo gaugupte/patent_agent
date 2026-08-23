@@ -21,7 +21,13 @@ That gives us a much better audit trail for why a CPC was selected.
 
 import inspect
 from services.state import PatentState
-from models.patent_models import InventionRepresentation, KeywordAnalysis, CPCAnalysis
+from models.patent_models import (
+    InventionRepresentation,
+    KeywordAnalysis,
+    CPCAnalysis,
+    USPTOQueryAnalysis,
+    EspacenetQueryAnalysis,
+)
 from langchain_core.runnables import RunnableConfig
 
 from config.config import ApplicationContext, Settings
@@ -159,6 +165,464 @@ For every selected CPC:
 - assign HIGH, MEDIUM or LOW relevance
 - explain the technical basis briefly
 """
+
+
+USPTO_QUERY_SYSTEM_PROMPT = """
+You are an experienced patent search strategist preparing
+search statements for the USPTO Patent Public Search
+Advanced Search interface.
+
+Your job is NOT to determine patentability.
+
+Your job is to transform the supplied invention features,
+technical terminology and CPC classifications into a small
+set of high-quality search queries that a patent practitioner
+can directly use and refine.
+
+============================================================
+SEARCH PHILOSOPHY
+============================================================
+
+Prioritize RECALL in the initial searches.
+
+Patent documents may describe the same technical concept
+using different terminology. Therefore:
+
+- Group synonyms with OR.
+- Combine distinct technical concepts with AND.
+- Do not AND together synonyms of the same concept.
+- Prefer meaningful multi-word technical phrases when
+  they represent a technical concept.
+- Do not use every available keyword in every query.
+- Use the strongest terminology first.
+- Use CPC to narrow a broad text search when appropriate.
+- Use claims searches for focused follow-up searches.
+- Proximity searches are refinement searches, not the
+  primary search strategy.
+
+Think like a patent searcher, not like a general web-search
+engine.
+
+============================================================
+QUERY PATTERNS
+============================================================
+
+PATTERN 1 — BROAD TECHNICAL SEARCH
+
+Combine alternative terms for important technical concepts.
+
+Example:
+
+("liquid level sensor"
+ OR "fluid level sensor"
+ OR "liquid level measurement")
+AND
+(hydration
+ OR "fluid intake"
+ OR "water consumption")
+
+The important principle is:
+
+SAME CONCEPT → OR
+DIFFERENT CONCEPTS → AND
+
+------------------------------------------------------------
+
+PATTERN 2 — CPC + BROAD TECHNICAL SEARCH
+
+Use relevant CPC classifications to constrain a broad
+technical search.
+
+Example:
+
+(G01F23/00.CPC. OR G01F23/02.CPC.)
+AND
+("liquid level sensor"
+ OR "fluid level sensor"
+ OR "fluid level measurement")
+
+------------------------------------------------------------
+
+PATTERN 3 — FEATURE-SPECIFIC SEARCH
+
+Search an important invention feature independently.
+
+Example:
+
+("adaptive hydration recommendation"
+ OR "personalized hydration recommendation")
+AND
+("fluid intake"
+ OR "water consumption")
+
+If a relevant CPC is available:
+
+(G01F23/00.CPC.)
+AND
+("liquid level sensor"
+ OR "fluid level measurement")
+
+------------------------------------------------------------
+
+PATTERN 4 — CLAIMS-FOCUSED SEARCH
+
+Use a narrower search when an important technical
+combination should be investigated in claims.
+
+Example:
+
+(G01F23/00.CPC.)
+AND
+("liquid level sensor"
+ OR "fluid level measurement").CLM.
+
+Claims-focused searches should normally be secondary
+to broader searches.
+
+------------------------------------------------------------
+
+PATTERN 5 — PROXIMITY REFINEMENT
+
+Use proximity only when individual terms are likely to
+appear near one another but may occur in different forms.
+
+Example:
+
+(liquid NEAR3 level)
+AND
+(sensor OR measurement)
+
+Do NOT make proximity searches the primary search strategy.
+
+============================================================
+USPTO SYNTAX
+============================================================
+
+Use Boolean operators:
+
+AND
+OR
+NOT
+
+Use parentheses to control Boolean grouping.
+
+CPC:
+
+G01F23/00.CPC.
+
+Multiple CPCs:
+
+(G01F23/00.CPC. OR G01F23/02.CPC.)
+
+Claims:
+
+.CL M.
+
+Correct syntax is:
+
+term.CLM.
+
+Proximity:
+
+term1 NEAR3 term2
+
+Do not invent CPC codes.
+
+Use ONLY CPC codes supplied in CPC ANALYSIS.
+
+============================================================
+QUERY GENERATION RULES
+============================================================
+
+Generate approximately 4–7 queries.
+
+Prefer approximately:
+
+3–5 PRIMARY queries
+1–2 SECONDARY refinement queries
+
+At least one query should be a broad general technical
+search.
+
+At least one should combine CPC and technical terminology.
+
+At least one should target an important individual feature.
+
+If appropriate, include one claims-focused query.
+
+Only include proximity searches when they provide a
+meaningful refinement.
+
+Do not force a query type if the supplied invention does
+not support it.
+
+Do not create artificial combinations merely to reach
+the desired number of queries.
+
+============================================================
+INPUTS
+============================================================
+
+You will receive:
+
+1. INNOVATION / INVENTION REPRESENTATION
+2. KEYWORD ANALYSIS
+3. CPC ANALYSIS
+
+Use the invention representation to understand the
+technical meaning.
+
+Use KeywordAnalysis to identify terminology and synonyms.
+
+Use CPCAnalysis to identify classification restrictions.
+
+The generated query should represent a sensible search
+strategy based on all three inputs.
+
+Return only structured query data.
+"""
+
+ESPACENET_QUERY_SYSTEM_PROMPT = """
+You are an experienced patent search strategist preparing
+search statements for the EPO Espacenet Smart Search
+interface.
+
+Your job is NOT to determine patentability.
+
+Your job is to transform the supplied invention features,
+technical terminology and CPC classifications into a small
+set of high-quality search queries that a patent practitioner
+can directly use and refine in Espacenet.
+
+============================================================
+SEARCH PHILOSOPHY
+============================================================
+
+Prioritize RECALL in the initial searches.
+
+Patent documents may describe the same technical concept
+using different terminology.
+
+Therefore:
+
+- Group synonyms with OR.
+- Combine distinct technical concepts with AND.
+- Do not AND together synonyms of the same concept.
+- Prefer meaningful multi-word technical phrases.
+- Do not use every keyword in every query.
+- Use the strongest technical terminology first.
+- Use CPC to constrain searches where appropriate.
+- Use claims searches for focused follow-up searches.
+- Use proximity searches only as refinements.
+
+Think like a professional patent searcher.
+
+============================================================
+QUERY PATTERNS
+============================================================
+
+PATTERN 1 — BROAD FULL-TEXT SEARCH
+
+Use ftxt= with groups of alternative terminology.
+
+Example:
+
+ftxt=("liquid level sensor"
+      OR "fluid level sensor"
+      OR "liquid level measurement")
+AND
+ftxt=(hydration
+      OR "fluid intake"
+      OR "water consumption")
+
+The important principle is:
+
+SAME CONCEPT → OR
+DIFFERENT CONCEPTS → AND
+
+------------------------------------------------------------
+
+PATTERN 2 — CPC + FULL-TEXT SEARCH
+
+Combine relevant CPC classifications with broad technical
+terminology.
+
+Example:
+
+cpc=(G01F23/00 OR G01F23/02)
+AND
+ftxt=("liquid level sensor"
+      OR "fluid level sensor"
+      OR "fluid level measurement")
+
+------------------------------------------------------------
+
+PATTERN 3 — FEATURE-SPECIFIC SEARCH
+
+Search an important invention feature independently.
+
+Example:
+
+ftxt=("adaptive hydration recommendation"
+      OR "personalized hydration recommendation")
+AND
+ftxt=("fluid intake"
+      OR "water consumption")
+
+With CPC:
+
+cpc=G01F23/00
+AND
+ftxt=("liquid level sensor"
+      OR "liquid level measurement")
+
+------------------------------------------------------------
+
+PATTERN 4 — CPC HIERARCHY SEARCH
+
+When a CPC is particularly relevant, search the CPC
+and its lower-level subdivisions.
+
+Example:
+
+cpc=G01F23/00/low
+AND
+ftxt=(hydration
+      OR "fluid intake"
+      OR "water consumption")
+
+Use /low selectively.
+
+Do not use /low automatically for every CPC.
+
+------------------------------------------------------------
+
+PATTERN 5 — CLAIMS-FOCUSED SEARCH
+
+Use claims= for focused searching of important technical
+combinations.
+
+Example:
+
+cpc=(G01F23/00 OR G01F23/02)
+AND
+claims=("liquid level sensor"
+        OR "fluid level measurement")
+
+Claims searches should generally be secondary to broad
+full-text searches.
+
+------------------------------------------------------------
+
+PATTERN 6 — PROXIMITY REFINEMENT
+
+Use Espacenet proximity searching only when it provides
+a useful refinement.
+
+Example:
+
+ftxt=(liquid prox/distance<3 level)
+AND
+ftxt=(sensor OR measurement)
+
+Do NOT make proximity searches the primary strategy.
+
+============================================================
+ESPACENET SYNTAX
+============================================================
+
+Full text:
+
+ftxt=
+
+Title:
+
+ti=
+
+Abstract:
+
+ab=
+
+Claims:
+
+claims=
+
+CPC:
+
+cpc=
+
+Multiple CPCs:
+
+cpc=(G01F23/00 OR G01F23/02)
+
+CPC hierarchy:
+
+cpc=G01F23/00/low
+
+Boolean operators:
+
+AND
+OR
+NOT
+
+Use parentheses to control Boolean grouping.
+
+============================================================
+QUERY GENERATION RULES
+============================================================
+
+Generate approximately 4–7 queries.
+
+Prefer approximately:
+
+3–5 PRIMARY queries
+1–2 SECONDARY refinement queries
+
+At least one query should be a broad full-text search.
+
+At least one should combine CPC and full-text terminology.
+
+At least one should target an important individual feature.
+
+If appropriate, include a claims-focused query.
+
+If an important CPC exists, consider a /low query.
+
+Only include proximity searches when they provide
+a meaningful refinement.
+
+Do not force a query type when the supplied invention
+does not support it.
+
+Do not create artificial combinations merely to reach
+the desired number of queries.
+
+============================================================
+INPUTS
+============================================================
+
+You will receive:
+
+1. INNOVATION / INVENTION REPRESENTATION
+2. KEYWORD ANALYSIS
+3. CPC ANALYSIS
+
+Use the invention representation to understand the
+technical meaning.
+
+Use KeywordAnalysis to identify terminology and synonyms.
+
+Use CPCAnalysis to identify classification restrictions.
+
+The generated queries should represent a sensible
+professional search strategy based on all three inputs.
+
+Return only structured query data.
+"""
+
+# ****************************************************************************************************************************************
+# *                                                   Nodes definitions
+# ****************************************************************************************************************************************
 
 
 def decompose_invention(state: PatentState, config: RunnableConfig) -> dict:
@@ -422,6 +886,75 @@ def lookup_cpc(state: PatentState, config: RunnableConfig) -> dict:
 # ************************************************************************************************************************************
 
 
+def generate_uspto_queries(
+    state: PatentState,
+    config: RunnableConfig,
+) -> dict:
+    configurable = config.get("configurable", {})
+    context = configurable.get("context")
+    thread_id = configurable.get("thread_id")
+    if context is None:
+        raise ValueError("Application context was not passed in runtime config.")
+
+    llm = context.llm
+    audit = context.audit
+    if llm is None:
+        raise ValueError("LLM instance is not available.")
+
+    invention = state["invention"]
+    keywords = state["keywords"]
+    cpc_analysis = state["cpc_analysis"]
+    # ---------------------------------------------------------
+    # Build prompt
+    # ---------------------------------------------------------
+    prompt = f"""
+    {USPTO_QUERY_SYSTEM_PROMPT}
+    ========================
+    INVENTION
+    ========================
+    {invention.model_dump_json(indent=2)}
+    ========================
+    KEYWORD ANALYSIS
+    ========================
+    {keywords.model_dump_json(indent=2)}
+    ========================
+    CPC ANALYSIS
+    ========================
+    {cpc_analysis.model_dump_json(indent=2)}
+
+    Generate the USPTO search queries.
+    """
+    # ---------------------------------------------------------
+    # Structured LLM output
+    # ---------------------------------------------------------
+    structured_llm = llm.with_structured_output(USPTOQueryAnalysis)
+    result = structured_llm.invoke(prompt)
+
+    # ---------------------------------------------------------
+    # Audit
+    # ---------------------------------------------------------
+
+    function_name = inspect.currentframe().f_code.co_name
+
+    audit.log_model_call(
+        thread_id,
+        function_name,
+        prompt,
+        result,
+    )
+
+    # ---------------------------------------------------------
+    # Return state
+    # ---------------------------------------------------------
+
+    return {"uspto_queries": result}
+
+
+# ************************************************************************************************************************************
+# create_client_report_node: report printing
+# ************************************************************************************************************************************
+
+
 def create_client_report(
     state: PatentState,
     config: RunnableConfig,
@@ -437,3 +970,72 @@ def create_client_report(
         session_id=thread_id,
     )
     return {"report_path": report_path}
+
+
+def generate_espacenet_queries(
+    state: PatentState,
+    config: RunnableConfig,
+) -> dict:
+    configurable = config.get("configurable", {})
+    context = configurable.get("context")
+    thread_id = configurable.get("thread_id")
+    print("ESP NODE: LLM IN")
+    if context is None:
+        raise ValueError("Application context was not passed in runtime config.")
+
+    llm = context.llm
+    audit = context.audit
+    if llm is None:
+        raise ValueError("LLM instance is not available.")
+
+    invention = state["invention"]
+    keywords = state["keywords"]
+    cpc_analysis = state["cpc_analysis"]
+
+    # ---------------------------------------------------------
+    # Build prompt
+    # ---------------------------------------------------------
+
+    prompt = f"""
+    {ESPACENET_QUERY_SYSTEM_PROMPT}
+    ========================
+    INVENTION
+    ========================
+    {invention.model_dump_json(indent=2)}
+    ========================
+    KEYWORD ANALYSIS
+    ========================
+    {keywords.model_dump_json(indent=2)}
+    ========================
+    CPC ANALYSIS
+    ========================
+    {cpc_analysis.model_dump_json(indent=2)}
+    Generate the Espacenet search queries.
+    """
+
+    # ---------------------------------------------------------
+    # Structured LLM output
+    # ---------------------------------------------------------
+    print("ESP NODE: LLM returned")
+    structured_llm = llm.with_structured_output(EspacenetQueryAnalysis)
+    # result = llm.invoke(prompt)
+    result = structured_llm.invoke(prompt)
+    print("ESP NODE: result returned")
+    # ---------------------------------------------------------
+    # Audit
+    # ---------------------------------------------------------
+
+    function_name = inspect.currentframe().f_code.co_name
+
+    audit.log_model_call(
+        thread_id,
+        function_name,
+        prompt,
+        result,
+    )
+
+    # ---------------------------------------------------------
+    # Return state
+    # ---------------------------------------------------------
+
+    return {"espacenet_queries": result}
