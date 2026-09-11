@@ -32,11 +32,11 @@ from langchain_openai import ChatOpenAI
 from config.config import ApplicationContext, Settings
 from graph.graph_builder import build_graph
 from services.embedding_service import init_embeddings
-from services.report_service import ReportService
+from services.report_service_old_1 import ReportService
 from services.utils import AuditService, init_db
 
 CPC_COLLECTION = "cpc_2026_08"
-CPC_CHROMA_PATH = "./data/chroma"
+CPC_CHROMA_PATH = "./data/chroma/cpc"
 
 
 def create_llm(settings: Settings):

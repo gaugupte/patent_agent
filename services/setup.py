@@ -14,7 +14,23 @@ uvicorn app:app --reload --port 8000 #-- to start the server
 curl.exe -X POST "http://localhost:8000/predict" -F "session_id=test-001" -F "idf_file=@input/idf_file.txt"
 
 
+* ? running of ingestion service:
+python -m ingestion.cpc_ingest "E:\Gautam\work_folder\own\patent_agent\CPCSchemeXML202608"
 
+python -m ingestion.cpc_ingest "E:\Gautam\work_folder\own\patent_agent\CPCSchemeXML202608" --validate-only
+
+* ? running the patentability check:
+python services\patentability_check\patentability_analyzer.py input\provisional_specification.pdf -m llama3.1:8b -o vaibhav_patent_validity.docx
+
+* ? generating the patent draft:
+python services\generate_spec.py input\provisional_specification.pdf -m llama3.1:8b -o vaibhav_patent_spec.docx
+
+
+
+
+
+
+"""
 * ? single line curl command to test the endpoint
 curl -X POST http://127.0.0.1:8000/predict -H "Content-Type: application/json" -d "{\"question\":\"What is LangGraph?\",\"session_id\":\"ABC123\"}"
 
@@ -94,7 +110,7 @@ curl http://localhost:11434/api/generate -d "{\"model\": \"mistral\", \"prompt\"
 if you want to un cache the previous environment variables, you can run the following commands in PowerShell:
 $env:LANGCHAIN_TRACING_V2="false"
 Remove-Item Env:LANGCHAIN_API_KEY -ErrorAction SilentlyContinue
-
+"""
 """
 
 1. create a new github repo and copy the url of the repo

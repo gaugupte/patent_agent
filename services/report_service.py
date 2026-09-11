@@ -703,113 +703,84 @@ class ReportService:
     # 5 & 6. SEARCH QUERIES
     # =========================================================
 
-    def _add_search_queries(
-        self,
-        document,
-        query_analysis,
-        heading,
-        search_system,
-    ):
+    def _add_search_queries(self, document, query_analysis, heading, search_system):
 
-        document.add_heading(
-            heading,
-            level=1,
-        )
+        document.add_heading(heading, level=1)
 
         if search_system == "USPTO":
             document.add_paragraph(
-                "The following queries are formatted for "
-                "the USPTO Patent Public Search Advanced "
-                "Search interface. General Boolean and "
-                "CPC-assisted queries are prioritized, "
-                "with narrower searches provided as "
-                "secondary refinements."
+                "The following search statements are formatted "
+                "for the USPTO Patent Public Search Advanced "
+                "Search interface. The primary searches focus "
+                "on the invention as a whole using consolidated "
+                "technical terminology and CPC-based retrieval "
+                "as alternative search paths. Narrower CPC/text, "
+                "feature-specific, claims and proximity searches "
+                "are provided as secondary refinements."
             )
 
         elif search_system == "Espacenet":
             document.add_paragraph(
-                "The following queries are formatted for "
-                "the EPO Espacenet Smart Search interface. "
-                "General full-text, CPC-assisted, feature-"
-                "specific and classification-hierarchy "
-                "searches are prioritized."
+                "The following search statements are formatted "
+                "for the EPO Espacenet Smart Search interface. "
+                "The primary searches focus on the invention as "
+                "a whole using consolidated full-text terminology "
+                "and CPC-based retrieval as alternative search "
+                "paths. Narrower CPC/text, CPC hierarchy, "
+                "feature-specific, claims and proximity searches "
+                "are provided as secondary refinements."
             )
 
-        for index, item in enumerate(
-            query_analysis.queries,
-            start=1,
-        ):
-            # -------------------------------------------------
+        for index, item in enumerate(query_analysis.queries, start=1):
+            # -----------------------------------------------------
             # Query title
-            # -------------------------------------------------
+            # -----------------------------------------------------
 
             paragraph = document.add_paragraph()
-
             run = paragraph.add_run(f"{index}. {item.query_name}")
-
             run.bold = True
             run.font.size = Pt(11)
 
-            # -------------------------------------------------
+            # -----------------------------------------------------
             # Priority
-            # -------------------------------------------------
+            # -----------------------------------------------------
 
             paragraph = document.add_paragraph()
-
             run = paragraph.add_run("Priority: ")
-
             run.bold = True
+            priority_run = paragraph.add_run(item.priority)
 
-            paragraph.add_run(item.priority)
-
-            # -------------------------------------------------
+            # -----------------------------------------------------
             # Purpose
-            # -------------------------------------------------
+            # -----------------------------------------------------
 
             paragraph = document.add_paragraph()
-
             run = paragraph.add_run("Purpose: ")
-
             run.bold = True
-
             paragraph.add_run(item.purpose)
 
-            # -------------------------------------------------
-            # Feature IDs
-            # -------------------------------------------------
+            # -----------------------------------------------------
+            # Target Features
+            #
+            # Kept for backward compatibility if feature_ids
+            # exists in either query model.
+            # -----------------------------------------------------
 
             if hasattr(item, "feature_ids") and item.feature_ids:
                 paragraph = document.add_paragraph()
-
                 run = paragraph.add_run("Target Features: ")
-
                 run.bold = True
-
                 paragraph.add_run(", ".join(item.feature_ids))
 
-            # -------------------------------------------------
-            # Query itself
-            # -------------------------------------------------
+            # -----------------------------------------------------
+            # Query
+            # -----------------------------------------------------
 
-            table = document.add_table(
-                rows=1,
-                cols=1,
-            )
-
+            table = document.add_table(rows=1, cols=1)
             table.style = "Table Grid"
-
             cell = table.rows[0].cells[0]
-
-            self._shade_cell(
-                cell,
-                "F3F3F3",
-            )
-
-            self._set_cell(
-                cell,
-                item.query,
-            )
-
+            self._shade_cell(cell, "F3F3F3")
+            self._set_cell(cell, item.query)
             document.add_paragraph()
 
     # =========================================================

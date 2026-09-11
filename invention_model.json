@@ -1,0 +1,27 @@
+{
+  "invention_title": "System and Method for Reporting and Fetching Fraud Information and Agreement Registration Using Government-Approved Unique Identifiers",
+  "technical_field": "Fraud Prevention and Resolution",
+  "problem_addressed": "Fraudulent activities in daily life, lack of preventive mechanisms, and unreliable fraud reporting systems",
+  "shortcomings_or_limitations": [],
+  "objectives": [],
+  "structural_features": [],
+  "functional_features": [],
+  "procedural_steps": [],
+  "technical_relationships": [
+    "UID-based fraud history retrieval",
+    "Preventive platform for fraud reporting and agreement registration",
+    "Integration of UID verification via official government APIs or authorized validation services"
+  ],
+  "disclosed_variations": [
+    "Use of Aadhaar, PAN, Passport, or Driving License as government-approved UIDs",
+    "Digital signature-based agreement registration",
+    "Blockchain-based timestamping for tamper-proof evidence"
+  ],
+  "disclosed_implementations": [],
+  "explicitly_disclosed_benefits": [],
+  "undisclosed_or_uncertain_matter": [
+    "Technical implementation of UID validation via official or authorized APIs",
+    "Specific algorithms for fraud information retrieval and storage",
+    "Detailed architecture of the verification engine"
+  ]
+}

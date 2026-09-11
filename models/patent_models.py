@@ -71,13 +71,9 @@ class CPCAnalysis(BaseModel):
 
 class USPTOQuery(BaseModel):
     query_name: str = Field(description="Name of the USPTO search query")
-
     query: str = Field(description="USPTO Patent Public Search query string")
-
     purpose: str = Field(description="Purpose of the search query")
-
-    feature_ids: list[str] = Field(default_factory=list, description="Invention features targeted by this query")
-
+    # feature_ids: list[str] = Field(default_factory=list, description="Invention features targeted by this query")
     priority: str = Field(description="PRIMARY or SECONDARY")
 
 
