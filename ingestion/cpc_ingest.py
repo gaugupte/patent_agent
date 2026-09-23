@@ -207,12 +207,7 @@ def create_embeddings(
 # =============================================================================
 
 
-def ingest_records(
-    records,
-    collection,
-    embeddings,
-    batch_size: int,
-) -> None:
+def ingest_records(records, collection, embeddings, batch_size: int) -> None:
 
     total = len(records)
 
@@ -221,22 +216,11 @@ def ingest_records(
 
     records_list = list(records.values())
 
-    for start in range(
-        0,
-        total,
-        batch_size,
-    ):
-        end = min(
-            start + batch_size,
-            total,
-        )
-
+    for start in range(0, total, batch_size):
+        end = min(start + batch_size, total)
         batch = records_list[start:end]
-
         documents = [build_semantic_document(record) for record in batch]
-
         ids = [record.code for record in batch]
-
         metadatas = [build_metadata(record) for record in batch]
 
         # -------------------------------------------------------------
@@ -251,12 +235,7 @@ def ingest_records(
 
         vectors = embeddings.embed_documents(documents)
 
-        collection.add(
-            ids=ids,
-            documents=documents,
-            embeddings=vectors,
-            metadatas=metadatas,
-        )
+        collection.add(ids=ids, documents=documents, embeddings=vectors, metadatas=metadatas)
 
         print(f"  Ingested {end:,}/{total:,} ({end / total * 100:.1f}%)")
 
@@ -269,22 +248,15 @@ def ingest_records(
 # =============================================================================
 
 
-def verify_collection(
-    collection,
-    expected_count: int,
-) -> None:
+def verify_collection(collection, expected_count: int) -> None:
 
     actual_count = collection.count()
-
     print()
     print("=" * 80)
     print("CHROMA VERIFICATION")
     print("=" * 80)
-
     print(f"Expected records : {expected_count:,}")
-
     print(f"Chroma records   : {actual_count:,}")
-
     if actual_count != expected_count:
         raise RuntimeError("Chroma record count does not match the number of canonical CPC records.")
 
@@ -296,12 +268,7 @@ def verify_collection(
 # =============================================================================
 
 
-def run_sanity_search(
-    collection,
-    embeddings,
-    query: str,
-    k: int = 5,
-) -> None:
+def run_sanity_search(collection, embeddings, query: str, k: int = 5) -> None:
 
     print()
     print("-" * 80)
@@ -320,15 +287,9 @@ def run_sanity_search(
         ],
     )
 
-    documents = result.get(
-        "documents",
-        [[]],
-    )[0]
+    documents = result.get("documents", [[]])[0]
 
-    metadatas = result.get(
-        "metadatas",
-        [[]],
-    )[0]
+    metadatas = result.get("metadatas", [[]])[0]
 
     distances = result.get(
         "distances",
@@ -337,22 +298,15 @@ def run_sanity_search(
 
     for index, document in enumerate(documents):
         metadata = metadatas[index] if index < len(metadatas) else {}
-
         distance = distances[index] if index < len(distances) else None
-
         print()
         print(f"{index + 1}. {metadata.get('code', '?')}")
-
         print(f"   Title: {metadata.get('title', '')}")
-
         if distance is not None:
             print(f"   Distance: {distance:.4f}")
 
 
-def run_sanity_queries(
-    collection,
-    embeddings,
-) -> None:
+def run_sanity_queries(collection, embeddings) -> None:
 
     queries = [
         "liquid level measurement",
@@ -366,12 +320,7 @@ def run_sanity_queries(
     print("=" * 80)
 
     for query in queries:
-        run_sanity_search(
-            collection,
-            embeddings,
-            query,
-            k=5,
-        )
+        run_sanity_search(collection, embeddings, query, k=5)
 
 
 # =============================================================================
@@ -382,11 +331,8 @@ def run_sanity_queries(
 def main() -> int:
 
     parser = build_argument_parser()
-
     args = parser.parse_args()
-
     xml_directory = Path(args.xml_directory)
-
     chroma_dir = Path(args.chroma_dir)
 
     # -------------------------------------------------------------------------
@@ -412,22 +358,15 @@ def main() -> int:
     print("=" * 80)
     print("CPC INGESTION")
     print("=" * 80)
-
     print(f"XML directory : {xml_directory}")
-
     print(f"Chroma dir    : {chroma_dir}")
-
     print(f"Collection    : {args.collection}")
-
     print(f"Embedding     : {args.embedding_model}")
-
     print(f"Batch size    : {args.batch_size}")
-
     print()
     print("Parsing CPC XML...")
 
     records, validation = parse_cpc_directory(xml_directory)
-
     print_validation_report(validation)
 
     # -------------------------------------------------------------------------
@@ -445,9 +384,7 @@ def main() -> int:
     if not validation.valid:
         print()
         print("ERROR: CPC validation failed.")
-
         print("Chroma was NOT modified.")
-
         return 1
 
     # -------------------------------------------------------------------------
@@ -459,11 +396,8 @@ def main() -> int:
         print("=" * 80)
         print("VALIDATION-ONLY MODE")
         print("=" * 80)
-
         print("No embeddings created.")
-
         print("No Chroma database modified.")
-
         return 0
 
     # -------------------------------------------------------------------------
@@ -472,10 +406,7 @@ def main() -> int:
 
     normalized_path = chroma_dir.parent / "cpc_normalized.json"
 
-    save_normalized_records(
-        records,
-        normalized_path,
-    )
+    save_normalized_records(records, normalized_path)
 
     # -------------------------------------------------------------------------
     # Create embeddings
@@ -498,41 +429,25 @@ def main() -> int:
     # -------------------------------------------------------------------------
 
     client = create_chroma_client(chroma_dir)
-
-    collection = create_collection(
-        client,
-        args.collection,
-        args.embedding_model,
-    )
+    collection = create_collection(client, args.collection, args.embedding_model)
 
     # -------------------------------------------------------------------------
     # Ingest
     # -------------------------------------------------------------------------
 
-    ingest_records(
-        records,
-        collection,
-        embeddings,
-        args.batch_size,
-    )
+    ingest_records(records, collection, embeddings, args.batch_size)
 
     # -------------------------------------------------------------------------
     # Verify
     # -------------------------------------------------------------------------
 
-    verify_collection(
-        collection,
-        len(records),
-    )
+    verify_collection(collection, len(records))
 
     # -------------------------------------------------------------------------
     # Semantic sanity tests
     # -------------------------------------------------------------------------
 
-    run_sanity_queries(
-        collection,
-        embeddings,
-    )
+    run_sanity_queries(collection, embeddings)
 
     # -------------------------------------------------------------------------
     # Normalized JSON cleanup
@@ -558,13 +473,9 @@ def main() -> int:
     print("=" * 80)
 
     print(f"Records indexed : {collection.count():,}")
-
     print(f"Collection      : {args.collection}")
-
     print(f"Chroma location : {chroma_dir}")
-
     print("Status          : SUCCESS")
-
     return 0
 
 
