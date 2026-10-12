@@ -1,0 +1,30 @@
+{
+  "session_id": "test-session-001",
+  "idf_text": "Invention Title:
+Smart Hydration Bottle with Adaptive Fluid-Intake Monitoring
+
+Technical Field:
+The invention relates to smart beverage containers and systems
+for monitoring and managing fluid intake.
+
+The system includes a beverage container having a liquid-holding
+chamber, a liquid-level or weight sensor, a temperature sensor,
+a motion sensor, a processor, memory, a communication module,
+and an indicator.
+
+The liquid-level sensor determines changes in the quantity of
+liquid in the container.
+
+The processor uses the sensor information to determine fluid
+consumed by the user.
+
+Environmental temperature, user activity and historical fluid
+consumption information are used to determine a personalized
+hydration requirement.
+
+The system compares actual consumption with the personalized
+requirement and generates an adaptive hydration recommendation.
+
+The recommendation may be presented through the container or
+communicated to a mobile device."
+}

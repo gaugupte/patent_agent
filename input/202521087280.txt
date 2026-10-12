@@ -1,0 +1,56 @@
+SUMMARY
+[0006] In view of the above recited problems, the present invention
+10 provides an immersion-cooled battery pack specifically designed for electric twoand three-wheelers, addressing the long-standing challenges of overheating,
+thermal runaway, and fire incidents in conventional lithium-ion battery systems.
+The invention introduces a robust and indigenous design that combines immersion
+cooling technology with thermoelectric active cooling to ensure safe, efficient,
+15 and uniform thermal management across all battery cells. By enabling simple
+assembly and scalability, the system is highly suitable for deployment in massmarket electric two-wheeler platforms where safety and reliability are paramount.
+[0007] At the core of the invention is a casing that defines an internal
+chamber configured to house a plurality of cylindrical battery cells. The cells are
+20 fully immersed in a dielectric cooling fluid, which is thermally conductive but
+electrically non-conductive, thereby allowing direct liquid contact without risk of
+short-circuiting. This immersion arrangement ensures uniform heat transfer from
+every surface of the cells, eliminating localized hotspots that are a major cause of
+premature cell failure and thermal instability. A specially designed support
+25 arrangement is provided at both the top and bottom of the casing to secure the
+cells in place, ensuring structural integrity even when the battery pack is subjected
+to vibrations, shocks, or non-upright orientations typically encountered in
+automotive use.
+[0008] To augment passive immersion cooling, the invention integrates a
+30 thermoelectric Peltier module mounted at the top of the casing. The Peltier
+module is oriented such that its cold side faces the internal chamber, while its hot
+4
+side faces outward. A thermal transfer plate is coupled to the cold side and
+extends into the dielectric fluid so that at least a portion of the plate is submerged,
+enabling efficient active cooling of both the fluid and the immersed battery cells.
+The hot side of the Peltier module is thermally coupled to an external heat sink,
+5 which dissipates the extracted heat into the environment. Through this active
+cooling arrangement, the system dynamically lowers the internal temperature of
+the battery pack, providing an additional safeguard against thermal runaway
+during high load or fast charging conditions.
+[0009] The inventive concept lies in the synergistic combination of
+10 immersion cooling with dielectric fluid and active thermoelectric heat extraction
+through a submerged thermal plate. Unlike conventional air cooling, which
+exhibits poor heat transfer, or channel-based liquid cooling, which requires
+complex fluid routing and introduces leakage risks, the present invention achieves
+direct, uniform, and reliable thermal control across all cells in a compact and
+15 modular design. The use of dielectric fluid ensures electrical safety while
+providing high thermal conductivity, while the Peltier-based transfer system
+provides an additional layer of precision cooling without introducing moving parts
+or complex circulation pumps.
+[0010] This inventive approach delivers significant technical effects.
+20 Experimental studies have demonstrated that while conventional forced air
+cooling allows cell temperatures to rise as high as 119°C, the immersion cooling
+system of the present invention reduces peak temperatures to approximately 52°C
+under similar operating conditions, representing a reduction of nearly 67°C. This
+drastic reduction directly mitigates the likelihood of thermal runaway events,
+25 thereby enhancing both user safety and battery longevity. Moreover, by
+maintaining cells within a safe thermal range, the system improves chargedischarge efficiency, reduces degradation rates, and enables higher power output
+for the same battery size.
+[0011] The invention thus achieves a technically advanced, safer, and
+30 more reliable battery pack architecture that addresses the urgent industrial need
+for robust thermal management in electric two- and three-wheelers. It combines
+5
+simplicity of assembly, indigenous manufacturability, and enhanced safety into a
+single solution that significantly
