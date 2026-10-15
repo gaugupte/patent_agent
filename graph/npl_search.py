@@ -1,666 +1,627 @@
-# graph/npl_search.py
+"""Asynchronous three-source NPL discovery and LLM relevance ranking.
 
+Providers: Semantic Scholar, OpenAlex, and arXiv.
+Requires: httpx (pip install httpx).
+Designed as an async LangGraph node. No full-text downloads are performed.
+"""
+from __future__ import annotations
+
+import asyncio
 import html
 import json
 import os
 import re
-import threading
 import time
-
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import xml.etree.ElementTree as ET
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
+import httpx
 from langchain_core.runnables import RunnableConfig
 
 from config.state import PatentState
 
+FEATURE_LIMIT = 8
+RESULTS_PER_QUERY = 20
+RERANK_CANDIDATE_LIMIT = 50
+RERANK_BATCH_SIZE = 10
+HTTP_TIMEOUT_SECONDS = 20.0
+SEMANTIC_SCHOLAR_MAX_RETRIES = 4
+USER_AGENT = "PatentAgentNPL/2.0 (scholarly discovery)"
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-NPL_FEATURE_LIMIT = 8
-NPL_RESULTS_PER_QUERY = 10
-NPL_HTTP_TIMEOUT_SECONDS = 15
-
-_CROSSREF_REQUEST_LOCK = threading.Lock()
-_CROSSREF_LAST_REQUEST_AT = 0.0
-
-
-# ---------------------------------------------------------------------------
-# Feature extraction and search-plan creation
-# ---------------------------------------------------------------------------
+CATEGORIES = (
+    ("structural", "structural_features"),
+    ("procedural", "procedural_features"),
+    ("functional", "functional_features"),
+)
 
 
-def _get_value(obj: Any, key: str, default: Any = None) -> Any:
-    """Read a field from either a dictionary or a Pydantic model."""
+def _get(obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
 
 
 def _feature_text(feature: Any) -> str:
-    """Extract a searchable description from an invention feature."""
-
-    values = [
-        _get_value(feature, "feature"),
-        _get_value(feature, "step"),
-        _get_value(feature, "function"),
-        _get_value(feature, "details"),
-        _get_value(feature, "description"),
-    ]
-
-    parts = [str(value).strip() for value in values if value and str(value).strip()]
-
-    return re.sub(r"\s+", " ", ". ".join(parts)).strip()
+    values = [_get(feature, k) for k in ("feature", "step", "function", "details", "description")]
+    text = ". ".join(str(v).strip() for v in values if v and str(v).strip())
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _feature_id(feature: Any) -> str:
-    return str(_get_value(feature, "feature_id", "") or "").strip()
+    return str(_get(feature, "feature_id", "") or "").strip()
 
 
-def _build_search_plan(invention: Any) -> list[dict[str, Any]]:
-    """
-    Create one consolidated search query per available feature category.
+def _features_by_category(invention: Any) -> dict[str, list[dict[str, str]]]:
+    result: dict[str, list[dict[str, str]]] = {}
+    for category, attr in CATEGORIES:
+        features = list(_get(invention, attr, []) or [])[:FEATURE_LIMIT]
+        result[category] = [
+            {"feature_id": _feature_id(item), "text": _feature_text(item)}
+            for item in features if _feature_text(item)
+        ]
+    return result
 
-    Maximum: three category queries, each searched against both providers.
-    """
 
-    categories = [
-        ("structural", "structural_features"),
-        ("procedural", "procedural_features"),
-        ("functional", "functional_features"),
-    ]
+def _compact(text: str, limit: int = 220) -> str:
+    text = re.sub(r"\s+", " ", str(text or "")).strip(" .;,\t\n")
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0]
+    return text
 
+
+def _fallback_query_plan(features: dict[str, list[dict[str, str]]]) -> list[dict[str, Any]]:
+    """Deterministic fallback if the configured LLM cannot produce a query plan."""
     plan = []
-
-    for category, attribute in categories:
-        features = _get_value(invention, attribute, []) or []
-        selected = []
-
-        for feature in list(features)[:NPL_FEATURE_LIMIT]:
-            description = _feature_text(feature)
-
-            if not description:
-                continue
-
-            # Keep individual descriptions reasonably concise.
-            if len(description) > 120:
-                description = description[:120].rsplit(" ", 1)[0]
-
-            selected.append(
-                {
-                    "feature_id": _feature_id(feature),
-                    "text": description,
-                }
-            )
-
-        if not selected:
+    for category, items in features.items():
+        if not items:
             continue
-
-        query_parts = list(dict.fromkeys(item["text"] for item in selected))
-
-        # Keep the consolidated query bounded.
-        query = " ".join(query_parts)[:900].strip()
-
-        plan.append(
-            {
-                "category": category,
-                "query": query,
-                "feature_ids": list(dict.fromkeys(item["feature_id"] for item in selected if item["feature_id"])),
-                "feature_count": len(selected),
-            }
-        )
-
+        texts = [_compact(item["text"], 160) for item in items]
+        # Semantic Scholar is plain-text only; do not send Boolean operators there.
+        semantic_query = "; ".join(texts[:4])[:700]
+        # Synonym-like academic query: preserve technical phrases and OR them.
+        phrases = []
+        for text in texts:
+            phrase = re.sub(r"[^\w\s-]", " ", text)
+            phrase = re.sub(r"\s+", " ", phrase).strip()
+            if phrase and phrase.lower() not in {p.lower() for p in phrases}:
+                phrases.append(phrase[:100])
+        concept_query = " OR ".join(f'"{p}"' for p in phrases[:6])[:700]
+        # arXiv supports fielded query syntax and AND/OR. Keep it bounded.
+        core = []
+        for text in texts[:3]:
+            words = [w for w in re.findall(r"[A-Za-z0-9]+", text) if len(w) > 3]
+            if words:
+                core.append(" AND ".join(f'all:"{w}"' for w in words[:4]))
+        arxiv_query = " OR ".join(f"({q})" for q in core)[:700]
+        plan.append({
+            "category": category,
+            "feature_ids": [x["feature_id"] for x in items if x["feature_id"]],
+            "feature_texts": texts,
+            "semantic_scholar_query": semantic_query,
+            "openalex_concept_query": concept_query or semantic_query,
+            "arxiv_boolean_query": arxiv_query or "all:" + json.dumps(semantic_query[:150]),
+            "query_plan_method": "deterministic_fallback",
+        })
     return plan
 
 
-# ---------------------------------------------------------------------------
-# HTTP and metadata helpers
-# ---------------------------------------------------------------------------
+def _parse_json_content(content: Any) -> Any:
+    if isinstance(content, list):
+        content = "".join(str(x.get("text", "")) if isinstance(x, dict) else str(x) for x in content)
+    text = str(content or "").strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I)
+    start, end = text.find("{"), text.rfind("}")
+    if start >= 0 and end > start:
+        text = text[start:end + 1]
+    return json.loads(text)
 
 
-def _get_json(url: str) -> dict[str, Any]:
-    """Perform a JSON HTTP GET using the Python standard library."""
+async def _llm_query_plan(context: Any, features: dict[str, list[dict[str, str]]]) -> list[dict[str, Any]]:
+    llm = getattr(context, "llm", None) if context is not None else None
+    if llm is None or not hasattr(llm, "ainvoke"):
+        return _fallback_query_plan(features)
 
-    request = Request(
-        url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "PatentAgentNPL/1.0",
-        },
-        method="GET",
-    )
-
-    with urlopen(
-        request,
-        timeout=NPL_HTTP_TIMEOUT_SECONDS,
-    ) as response:
-        charset = response.headers.get_content_charset() or "utf-8"
-        return json.loads(response.read().decode(charset))
-
-
-def _reconstruct_abstract(inverted_index: Any) -> str | None:
-    """Reconstruct an OpenAlex abstract from its inverted index."""
-
-    if not isinstance(inverted_index, dict):
-        return None
-
-    positions = {}
-
-    for token, indexes in inverted_index.items():
-        if not isinstance(indexes, list):
-            continue
-
-        for index in indexes:
-            if isinstance(index, int) and index >= 0:
-                positions[index] = token
-
-    if not positions:
-        return None
-
-    return " ".join(positions[index] for index in sorted(positions))
-
-
-def _strip_html(value: Any) -> str | None:
-    """Remove HTML markup from Crossref abstract metadata."""
-
-    if not value:
-        return None
-
-    text = re.sub(r"<[^>]+>", " ", str(value))
-    text = html.unescape(text)
-    text = re.sub(r"\s+", " ", text).strip()
-
-    return text or None
+    prompt = f"""You are designing scholarly non-patent-literature search queries for a patent-prior-art discovery tool.
+Return ONLY valid JSON: {{"queries":[{{"category":"structural|procedural|functional","semantic_scholar_query":"...","openalex_concept_query":"...","arxiv_boolean_query":"..."}}]}}.
+For every non-empty category in the input, return exactly one query object.
+Rules:
+- Semantic Scholar query: natural language, concise technical meaning, no Boolean syntax; retain important mechanisms and domain context.
+- OpenAlex query: concise academic terminology and synonym variants, using quoted phrases and OR where useful. It is still a text query, not a guarantee of concept-vector matching.
+- arXiv query: valid arXiv advanced-search syntax using fields such as ti:, abs:, and all:, plus AND/OR and parentheses. Avoid unsupported wildcard assumptions. Keep queries focused; do not include generic words alone.
+- Do not invent features, mechanisms, or synonyms unsupported by the feature descriptions.
+- Query breadth should favor relevant papers over maximal result volume.
+Input feature matrix:
+{json.dumps(features, ensure_ascii=False)}"""
+    try:
+        response = await llm.ainvoke(prompt)
+        content = getattr(response, "content", response)
+        parsed = _parse_json_content(content)
+        raw_queries = parsed.get("queries", [])
+        by_category = {str(q.get("category", "")).lower(): q for q in raw_queries if isinstance(q, dict)}
+        plan = []
+        for category, items in features.items():
+            if not items:
+                continue
+            q = by_category.get(category, {})
+            fallback = _fallback_query_plan({category: items})[0]
+            plan.append({
+                **fallback,
+                "semantic_scholar_query": _compact(q.get("semantic_scholar_query") or fallback["semantic_scholar_query"], 700),
+                "openalex_concept_query": _compact(q.get("openalex_concept_query") or fallback["openalex_concept_query"], 700),
+                "arxiv_boolean_query": _compact(q.get("arxiv_boolean_query") or fallback["arxiv_boolean_query"], 700),
+                "query_plan_method": "llm",
+            })
+        return plan
+    except Exception as exc:
+        print(f"NPL query-plan LLM failed; using fallback queries: {exc}")
+        return _fallback_query_plan(features)
 
 
 def _normalize_doi(value: Any) -> str:
-    """Normalize DOI values for duplicate detection."""
-
     if not value:
         return ""
-
-    doi = str(value).strip().lower()
-    doi = re.sub(
-        r"^https?://(dx\.)?doi\.org/",
-        "",
-        doi,
-    )
-
-    return doi.rstrip(".,; ")
+    value = str(value).strip().lower()
+    value = re.sub(r"^https?://(dx\.)?doi\.org/", "", value)
+    return value.strip().rstrip(".,; ")
 
 
 def _normalize_title(value: Any) -> str:
-    """Normalize titles for duplicate detection when DOI is unavailable."""
-
-    title = str(value or "").casefold()
-    title = re.sub(r"[^a-z0-9]+", " ", title)
-
-    return re.sub(r"\s+", " ", title).strip()
+    value = str(value or "").casefold()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
 
 
-def _provider_error(
-    provider: str,
-    category: str,
-    started: float,
-    exc: Exception,
-) -> dict[str, Any]:
-    return {
-        "provider": provider,
-        "category": category,
-        "results": [],
-        "count": 0,
-        "elapsed_seconds": round(time.monotonic() - started, 3),
-        "error": f"{type(exc).__name__}: {exc}",
-    }
+def _arxiv_id(value: Any) -> str:
+    if not value:
+        return ""
+    text = str(value).strip()
+    text = re.sub(r"^https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/", "", text, flags=re.I)
+    text = re.sub(r"\.pdf$", "", text, flags=re.I)
+    return text.split("v")[0].strip().lower()
 
 
-# ---------------------------------------------------------------------------
-# OpenAlex
-# ---------------------------------------------------------------------------
-
-
-def _normalize_openalex_work(
-    work: dict[str, Any],
-    plan_item: dict[str, Any],
-) -> dict[str, Any] | None:
-
-    title = str(work.get("title") or "").strip()
-
+def _normalize_record(*, title: str, authors: list[str], date: str | None, abstract: str | None,
+                      doi: Any, url: str | None, provider: str, record_id: str | None,
+                      category: str, feature_ids: list[str], tldr: str | None = None,
+                      arxiv_id: str | None = None, venue: str | None = None,
+                      document_type: str | None = None, updated_date: str | None = None) -> dict[str, Any] | None:
+    title = re.sub(r"\s+", " ", str(title or "")).strip()
     if not title:
         return None
-
-    authors = []
-
-    for authorship in work.get("authorships") or []:
-        author = (authorship or {}).get("author") or {}
-        name = author.get("display_name")
-
-        if name:
-            authors.append(name)
-
-    location = work.get("primary_location") or {}
-    source = location.get("source") or {}
-    open_access = work.get("open_access") or {}
-    best_location = work.get("best_oa_location") or {}
-    ids = work.get("ids") or {}
-
-    doi = work.get("doi") or ids.get("doi")
-
-    url = location.get("landing_page_url") or best_location.get("landing_page_url") or open_access.get("oa_url") or doi or work.get("id")
-
+    clean_doi = _normalize_doi(doi)
     return {
         "title": title,
-        "authors": authors,
-        "publication_date": (work.get("publication_date") or work.get("publication_year")),
-        "document_type": work.get("type"),
-        "abstract": _reconstruct_abstract(work.get("abstract_inverted_index")),
-        "doi": doi,
-        "url": url,
-        "venue": source.get("display_name"),
-        "source_provider": "OpenAlex",
-        "provider_record_id": work.get("id"),
-        "open_access_url": (open_access.get("oa_url") or best_location.get("pdf_url")),
-        "searched_feature_ids": list(plan_item["feature_ids"]),
-        "search_category": plan_item["category"],
+        "authors": authors or [],
+        "publication_date": date,
+        "updated_date": updated_date,
+        "document_type": document_type,
+        "abstract": re.sub(r"\s+", " ", html.unescape(str(abstract or ""))).strip() or None,
+        "tldr": re.sub(r"\s+", " ", html.unescape(str(tldr or ""))).strip() or None,
+        "doi": clean_doi or None,
+        "arxiv_id": _arxiv_id(arxiv_id) or None,
+        "url": url or (f"https://doi.org/{clean_doi}" if clean_doi else None),
+        "venue": venue,
+        "source_provider": provider,
+        "provider_record_id": record_id,
+        "searched_feature_ids": list(feature_ids),
+        "search_category": category,
     }
 
 
-def _search_openalex(
-    plan_item: dict[str, Any],
+async def _get_json(client: httpx.AsyncClient, url: str, params: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
+    response = await client.get(url, params=params, headers=headers)
+    response.raise_for_status()
+    return response.json()
+
+
+async def _semantic_scholar_get_json(
+    client: httpx.AsyncClient,
+    params: dict[str, Any],
+    headers: dict[str, str],
+    request_lock: asyncio.Lock,
+    rate_state: dict[str, float],
 ) -> dict[str, Any]:
+    """Serialize Semantic Scholar requests and retry transient 429 responses."""
+    api_key_present = bool(os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip())
+    # Conservative spacing: API-key requests around 1 request/sec; without a key,
+    # slow down further because unauthenticated traffic shares a public pool.
+    default_interval = 1.1 if api_key_present else 3.5
+    min_interval = max(0.0, float(os.getenv("SEMANTIC_SCHOLAR_MIN_INTERVAL_SECONDS", default_interval)))
+    url = "https://api.semanticscholar.org/graph/v1/paper/search"
 
+    for attempt in range(SEMANTIC_SCHOLAR_MAX_RETRIES + 1):
+        async with request_lock:
+            elapsed = time.monotonic() - rate_state.get("last_request_at", 0.0)
+            if elapsed < min_interval:
+                await asyncio.sleep(min_interval - elapsed)
+            response = await client.get(url, params=params, headers=headers)
+            rate_state["last_request_at"] = time.monotonic()
+
+        if response.status_code == 429:
+            if attempt >= SEMANTIC_SCHOLAR_MAX_RETRIES:
+                response.raise_for_status()
+            retry_after = response.headers.get("Retry-After", "").strip()
+            try:
+                wait_seconds = float(retry_after)
+            except (TypeError, ValueError):
+                wait_seconds = min(5.0 * (2 ** attempt), 60.0)
+            # Avoid a tight retry loop, and cap server-provided delays to a practical
+            # maximum per attempt. A later retry may still be rate-limited.
+            wait_seconds = max(1.0, min(wait_seconds, 120.0))
+            await asyncio.sleep(wait_seconds)
+            continue
+
+        response.raise_for_status()
+        return response.json()
+
+    raise RuntimeError("Semantic Scholar retries exhausted")
+
+
+async def _search_semantic_scholar(
+    client: httpx.AsyncClient,
+    item: dict[str, Any],
+    request_lock: asyncio.Lock,
+    rate_state: dict[str, float],
+) -> dict[str, Any]:
     started = time.monotonic()
-
+    provider, category = "Semantic Scholar", item["category"]
     try:
-        params = {
-            "search": plan_item["query"],
-            "per-page": NPL_RESULTS_PER_QUERY,
-            "select": ("id,doi,title,publication_year,publication_date,type,authorships,primary_location,best_oa_location,open_access,abstract_inverted_index,ids"),
+        headers = {}
+        api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip()
+        if api_key:
+            headers["x-api-key"] = api_key
+        payload = await _semantic_scholar_get_json(client, {
+            "query": item["semantic_scholar_query"],
+            "limit": RESULTS_PER_QUERY,
+            "fields": "title,abstract,tldr,year,publicationDate,authors,externalIds,url,venue,publicationTypes,openAccessPdf",
+        }, headers, request_lock, rate_state)
+        results = []
+        for paper in payload.get("data", []):
+            ids = paper.get("externalIds") or {}
+            tldr = paper.get("tldr")
+            if isinstance(tldr, dict):
+                tldr = tldr.get("text")
+            authors = [a.get("name", "") for a in paper.get("authors", []) if a.get("name")]
+            normalized = _normalize_record(
+                title=paper.get("title", ""), authors=authors,
+                date=paper.get("publicationDate") or (str(paper.get("year")) if paper.get("year") else None),
+                abstract=paper.get("abstract"), tldr=tldr,
+                doi=ids.get("DOI"), arxiv_id=ids.get("ArXiv"), url=paper.get("url"),
+                provider=provider, record_id=paper.get("paperId"), category=category,
+                feature_ids=item["feature_ids"], venue=paper.get("venue"),
+                document_type=",".join(paper.get("publicationTypes") or []) or None,
+            )
+            if normalized:
+                oa_pdf = paper.get("openAccessPdf") or {}
+                normalized["open_access_url"] = oa_pdf.get("url")
+                results.append(normalized)
+        return _outcome(provider, category, results, started)
+    except Exception as exc:
+        return _error_outcome(provider, category, started, exc)
+
+
+async def _search_openalex(client: httpx.AsyncClient, item: dict[str, Any]) -> dict[str, Any]:
+    started = time.monotonic()
+    provider, category = "OpenAlex", item["category"]
+    try:
+        params: dict[str, Any] = {
+            "search": item["openalex_concept_query"],
+            "per-page": RESULTS_PER_QUERY,
+            "select": "id,doi,title,publication_year,publication_date,type,authorships,primary_location,best_oa_location,open_access,abstract_inverted_index,ids,topics,keywords",
         }
-
         api_key = os.getenv("OPENALEX_API_KEY", "").strip()
-
         if api_key:
             params["api_key"] = api_key
-
-        url = "https://api.openalex.org/works?" + urlencode(params)
-
-        payload = _get_json(url)
-
+        payload = await _get_json(client, "https://api.openalex.org/works", params)
         results = []
-
-        for work in payload.get("results") or []:
-            normalized = _normalize_openalex_work(work, plan_item)
-
-            if normalized:
-                results.append(normalized)
-
-        return {
-            "provider": "OpenAlex",
-            "category": plan_item["category"],
-            "results": results,
-            "count": len(results),
-            "elapsed_seconds": round(time.monotonic() - started, 3),
-            "error": None,
-        }
-
-    except Exception as exc:
-        # A provider failure must not prevent the other provider from running.
-        return _provider_error(
-            "OpenAlex",
-            plan_item["category"],
-            started,
-            exc,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Crossref
-# ---------------------------------------------------------------------------
-
-
-def _crossref_date(work: dict[str, Any]) -> str | None:
-    """Extract the best available publication date from Crossref."""
-
-    for key in (
-        "published-print",
-        "published-online",
-        "published",
-        "created",
-    ):
-        date_parts = (work.get(key) or {}).get("date-parts") or []
-
-        if not date_parts or not date_parts[0]:
-            continue
-
-        parts = date_parts[0]
-
-        if len(parts) >= 3:
-            return f"{parts[0]:04d}-{parts[1]:02d}-{parts[2]:02d}"
-
-        if len(parts) == 2:
-            return f"{parts[0]:04d}-{parts[1]:02d}"
-
-        return str(parts[0])
-
-    return None
-
-
-def _normalize_crossref_work(
-    work: dict[str, Any],
-    plan_item: dict[str, Any],
-) -> dict[str, Any] | None:
-
-    titles = work.get("title") or []
-    title = str(titles[0]).strip() if titles else ""
-
-    if not title:
-        return None
-
-    authors = []
-
-    for author in work.get("author") or []:
-        name = " ".join(
-            part
-            for part in (
-                author.get("given"),
-                author.get("family"),
+        for work in payload.get("results", []):
+            authors = []
+            for authorship in work.get("authorships") or []:
+                name = (authorship.get("author") or {}).get("display_name")
+                if name:
+                    authors.append(name)
+            inv = work.get("abstract_inverted_index") or {}
+            positions: dict[int, str] = {}
+            for token, indexes in inv.items():
+                for index in indexes if isinstance(indexes, list) else []:
+                    if isinstance(index, int):
+                        positions[index] = token
+            abstract = " ".join(positions[i] for i in sorted(positions)) if positions else None
+            location = work.get("primary_location") or {}
+            source = location.get("source") or {}
+            oa = work.get("open_access") or {}
+            best_oa = work.get("best_oa_location") or {}
+            doi = work.get("doi") or (work.get("ids") or {}).get("doi")
+            normalized = _normalize_record(
+                title=work.get("title", ""), authors=authors,
+                date=work.get("publication_date") or (str(work.get("publication_year")) if work.get("publication_year") else None),
+                abstract=abstract, doi=doi,
+                url=location.get("landing_page_url") or best_oa.get("landing_page_url") or oa.get("oa_url") or work.get("id"),
+                provider=provider, record_id=work.get("id"), category=category,
+                feature_ids=item["feature_ids"], venue=source.get("display_name"), document_type=work.get("type"),
             )
-            if part
-        )
-
-        if name:
-            authors.append(name)
-
-    doi_value = work.get("DOI")
-    doi_url = f"https://doi.org/{doi_value}" if doi_value else None
-    containers = work.get("container-title") or []
-
-    return {
-        "title": title,
-        "authors": authors,
-        "publication_date": _crossref_date(work),
-        "document_type": work.get("type"),
-        "abstract": _strip_html(work.get("abstract")),
-        "doi": doi_url,
-        "url": work.get("URL") or doi_url,
-        "venue": containers[0] if containers else None,
-        "source_provider": "Crossref",
-        "provider_record_id": doi_value,
-        "open_access_url": None,
-        "searched_feature_ids": list(plan_item["feature_ids"]),
-        "search_category": plan_item["category"],
-    }
+            if normalized:
+                normalized["open_access_url"] = oa.get("oa_url") or best_oa.get("pdf_url")
+                normalized["openalex_topics"] = [x.get("display_name") for x in work.get("topics", []) if x.get("display_name")]
+                normalized["openalex_keywords"] = [x.get("display_name") for x in work.get("keywords", []) if x.get("display_name")]
+                results.append(normalized)
+        return _outcome(provider, category, results, started)
+    except Exception as exc:
+        return _error_outcome(provider, category, started, exc)
 
 
-def _search_crossref(
-    plan_item: dict[str, Any],
-) -> dict[str, Any]:
-
-    global _CROSSREF_LAST_REQUEST_AT
-
+async def _search_arxiv(client: httpx.AsyncClient, item: dict[str, Any]) -> dict[str, Any]:
     started = time.monotonic()
-
+    provider, category = "arXiv", item["category"]
     try:
-        params = {
-            "query.bibliographic": plan_item["query"],
-            "rows": NPL_RESULTS_PER_QUERY,
-            "select": ("DOI,title,author,published,published-print,published-online,created,type,URL,abstract,container-title"),
-        }
-
-        mailto = os.getenv("CROSSREF_MAILTO", "").strip()
-
-        if mailto:
-            params["mailto"] = mailto
-
-        url = "https://api.crossref.org/works?" + urlencode(params)
-
-        # Keep Crossref requests serial and conservatively paced.
-        with _CROSSREF_REQUEST_LOCK:
-            minimum_interval = 0.35 if mailto else 1.1
-            elapsed = time.monotonic() - _CROSSREF_LAST_REQUEST_AT
-
-            if _CROSSREF_LAST_REQUEST_AT and elapsed < minimum_interval:
-                time.sleep(minimum_interval - elapsed)
-
-            payload = _get_json(url)
-            _CROSSREF_LAST_REQUEST_AT = time.monotonic()
-
-        message = payload.get("message") or {}
+        # arXiv returns Atom XML, so parse the feed rather than expecting JSON.
+        payload = await client.get("https://export.arxiv.org/api/query", params={
+            "search_query": item["arxiv_boolean_query"],
+            "start": 0,
+            "max_results": RESULTS_PER_QUERY,
+            "sortBy": "relevance",
+            "sortOrder": "descending",
+        })
+        payload.raise_for_status()
+        root = ET.fromstring(payload.text)
+        ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
         results = []
-
-        for work in message.get("items") or []:
-            normalized = _normalize_crossref_work(work, plan_item)
-
-            if normalized:
-                results.append(normalized)
-
-        return {
-            "provider": "Crossref",
-            "category": plan_item["category"],
-            "results": results,
-            "count": len(results),
-            "elapsed_seconds": round(time.monotonic() - started, 3),
-            "error": None,
-        }
-
-    except Exception as exc:
-        return _provider_error(
-            "Crossref",
-            plan_item["category"],
-            started,
-            exc,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Deduplication
-# ---------------------------------------------------------------------------
-
-
-def _deduplicate_results(
-    results: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """
-    Deduplicate by DOI first, then normalized title and first author.
-
-    Preserve source providers, source URLs, feature IDs and categories.
-    """
-
-    unique_results = []
-    result_index_by_key = {}
-
-    for result in results:
-        doi = _normalize_doi(result.get("doi"))
-        title = _normalize_title(result.get("title"))
-
-        authors = result.get("authors") or []
-        first_author = _normalize_title(authors[0]) if authors else ""
-
-        if doi:
-            key = f"doi:{doi}"
-        elif title:
-            key = f"title-author:{title}|{first_author}"
-        else:
-            key = ""
-
-        # Retain records with insufficient information to deduplicate.
-        if not key:
-            unique_results.append(result)
-            continue
-
-        existing_index = result_index_by_key.get(key)
-
-        if existing_index is None:
-            merged = dict(result)
-
-            merged["source_providers"] = [result["source_provider"]] if result.get("source_provider") else []
-            merged["source_urls"] = [result["url"]] if result.get("url") else []
-            merged["search_categories"] = [result["search_category"]] if result.get("search_category") else []
-            merged["searched_feature_ids"] = list(dict.fromkeys(result.get("searched_feature_ids") or []))
-
-            result_index_by_key[key] = len(unique_results)
-            unique_results.append(merged)
-            continue
-
-        existing = unique_results[existing_index]
-
-        for field, value in (
-            ("source_providers", result.get("source_provider")),
-            ("source_urls", result.get("url")),
-            ("search_categories", result.get("search_category")),
-        ):
-            if value:
-                values = existing.setdefault(field, [])
-
-                if value not in values:
-                    values.append(value)
-
-        feature_ids = existing.setdefault("searched_feature_ids", [])
-
-        for feature_id in result.get("searched_feature_ids") or []:
-            if feature_id and feature_id not in feature_ids:
-                feature_ids.append(feature_id)
-
-        # Fill missing metadata without overwriting existing values.
-        for field in (
-            "abstract",
-            "publication_date",
-            "venue",
-            "open_access_url",
-            "doi",
-        ):
-            if not existing.get(field) and result.get(field):
-                existing[field] = result[field]
-
-    return unique_results
-
-
-# ---------------------------------------------------------------------------
-# LangGraph node
-# ---------------------------------------------------------------------------
-
-
-def search_npl_openalex_crossref(
-    state: PatentState,
-    config: RunnableConfig,
-) -> dict[str, Any]:
-    """
-    Search OpenAlex and Crossref for non-patent literature.
-
-    Returns NPL query details, normalized references and a search summary.
-    """
-
-    invention = state.get("invention")
-
-    if invention is None:
-        raise ValueError("Missing 'invention' in PatentState. Run decompose_invention before NPL search.")
-
-    plan = _build_search_plan(invention)
-
-    if not plan:
-        return {
-            "npl_queries": [],
-            "npl_results": [],
-            "npl_search_summary": {
-                "status": "no_features",
-                "query_count": 0,
-                "provider_request_count": 0,
-                "raw_result_count": 0,
-                "deduplicated_count": 0,
-                "duplicates_removed": 0,
-                "provider_calls": [],
-            },
-        }
-
-    raw_results = []
-    provider_calls = []
-    futures = []
-
-    # At most three queries per provider, six provider requests total.
-    with ThreadPoolExecutor(max_workers=min(6, len(plan) * 2)) as executor:
-        for plan_item in plan:
-            futures.append(executor.submit(_search_openalex, plan_item))
-            futures.append(executor.submit(_search_crossref, plan_item))
-
-        for future in as_completed(futures):
-            outcome = future.result()
-
-            provider_calls.append(
-                {
-                    key: outcome[key]
-                    for key in (
-                        "provider",
-                        "category",
-                        "count",
-                        "elapsed_seconds",
-                        "error",
-                    )
-                }
+        for entry in root.findall("atom:entry", ns):
+            title = " ".join((entry.findtext("atom:title", default="", namespaces=ns) or "").split())
+            abstract = " ".join((entry.findtext("atom:summary", default="", namespaces=ns) or "").split())
+            entry_id = entry.findtext("atom:id", default="", namespaces=ns)
+            authors = [a.findtext("atom:name", default="", namespaces=ns) for a in entry.findall("atom:author", ns)]
+            doi = entry.findtext("arxiv:doi", default="", namespaces=ns)
+            published = entry.findtext("atom:published", default="", namespaces=ns) or None
+            updated = entry.findtext("atom:updated", default="", namespaces=ns) or None
+            normalized = _normalize_record(
+                title=title, authors=authors, date=published[:10] if published else None,
+                updated_date=updated[:10] if updated else None, abstract=abstract, doi=doi,
+                arxiv_id=entry_id, url=entry_id or None, provider=provider,
+                record_id=entry_id, category=category, feature_ids=item["feature_ids"],
+                document_type="preprint",
             )
+            if normalized:
+                normalized["arxiv_submitted_date"] = published[:10] if published else None
+                normalized["arxiv_updated_date"] = updated[:10] if updated else None
+                results.append(normalized)
+        return _outcome(provider, category, results, started)
+    except Exception as exc:
+        return _error_outcome(provider, category, started, exc)
 
-            raw_results.extend(outcome["results"])
 
-    unique_results = _deduplicate_results(raw_results)
+def _outcome(provider: str, category: str, results: list[dict[str, Any]], started: float) -> dict[str, Any]:
+    return {"provider": provider, "category": category, "results": results, "count": len(results),
+            "elapsed_seconds": round(time.monotonic() - started, 3), "error": None}
 
-    unique_results.sort(
-        key=lambda item: (
-            not bool(item.get("doi")),
-            (item.get("title") or "").casefold(),
-        )
-    )
 
-    provider_calls.sort(key=lambda item: (item["provider"], item["category"]))
+def _error_outcome(provider: str, category: str, started: float, exc: Exception) -> dict[str, Any]:
+    return {"provider": provider, "category": category, "results": [], "count": 0,
+            "elapsed_seconds": round(time.monotonic() - started, 3), "error": f"{type(exc).__name__}: {exc}"}
 
-    successful_calls = [call for call in provider_calls if call["error"] is None]
 
-    if raw_results:
-        status = "success"
-    elif successful_calls:
-        status = "no_results"
-    else:
-        status = "provider_error"
+def _deduplicate(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    key_to_index: dict[str, int] = {}
+    for record in results:
+        doi = _normalize_doi(record.get("doi"))
+        arxiv = _arxiv_id(record.get("arxiv_id"))
+        title = _normalize_title(record.get("title"))
+        authors = record.get("authors") or []
+        first_author = _normalize_title(authors[0]) if authors else ""
+        key = f"doi:{doi}" if doi else (f"arxiv:{arxiv}" if arxiv else (f"title-author:{title}|{first_author}" if title else ""))
+        if not key or key not in key_to_index:
+            item = dict(record)
+            item["source_providers"] = [record["source_provider"]] if record.get("source_provider") else []
+            item["source_urls"] = [record["url"]] if record.get("url") else []
+            item["search_categories"] = [record["search_category"]] if record.get("search_category") else []
+            item["searched_feature_ids"] = list(dict.fromkeys(record.get("searched_feature_ids") or []))
+            if key:
+                key_to_index[key] = len(merged)
+            merged.append(item)
+            continue
+        existing = merged[key_to_index[key]]
+        for field, value in (("source_providers", record.get("source_provider")),
+                             ("source_urls", record.get("url")),
+                             ("search_categories", record.get("search_category"))):
+            if value and value not in existing.setdefault(field, []):
+                existing[field].append(value)
+        for fid in record.get("searched_feature_ids") or []:
+            if fid and fid not in existing["searched_feature_ids"]:
+                existing["searched_feature_ids"].append(fid)
+        # Keep the richer abstract/TLDR and fill metadata gaps.
+        for field in ("abstract", "tldr", "publication_date", "updated_date", "venue", "open_access_url", "doi", "arxiv_id"):
+            if not existing.get(field) and record.get(field):
+                existing[field] = record[field]
+        for field in ("openalex_topics", "openalex_keywords"):
+            for value in record.get(field, []):
+                if value not in existing.setdefault(field, []):
+                    existing[field].append(value)
+    return merged
 
-    summary = {
-        "status": status,
-        "query_count": len(plan),
-        "provider_request_count": len(futures),
-        "raw_result_count": len(raw_results),
-        "deduplicated_count": len(unique_results),
-        "duplicates_removed": len(raw_results) - len(unique_results),
-        "provider_calls": provider_calls,
+
+def _pre_rank(record: dict[str, Any], feature_matrix: dict[str, list[dict[str, str]]]) -> float:
+    """Cheap shortlist score before expensive LLM evaluation; not a final relevance score."""
+    text = _normalize_title(" ".join([
+        record.get("title") or "", record.get("abstract") or "", record.get("tldr") or "",
+        " ".join(record.get("openalex_topics") or []), " ".join(record.get("openalex_keywords") or []),
+    ]))
+    score = 0.0
+    for category, features in feature_matrix.items():
+        category_hits = 0
+        for feature in features:
+            terms = [w for w in re.findall(r"[a-z0-9]+", feature["text"].lower()) if len(w) >= 5]
+            if not terms:
+                continue
+            hits = sum(1 for term in set(terms) if term in text)
+            if hits:
+                category_hits += min(hits, 4)
+        score += min(category_hits, 12)
+    if record.get("abstract"):
+        score += 1.0
+    if record.get("tldr"):
+        score += 0.5
+    return score
+
+
+def _llm_content(response: Any) -> str:
+    return str(getattr(response, "content", response) or "")
+
+
+async def _rerank_with_llm(context: Any, records: list[dict[str, Any]], feature_matrix: dict[str, list[dict[str, str]]]) -> tuple[list[dict[str, Any]], str]:
+    llm = getattr(context, "llm", None) if context is not None else None
+    if llm is None or not hasattr(llm, "ainvoke"):
+        for record in records:
+            record["relevance_score"] = round(record.get("pre_rank_score", 0.0), 2)
+            record["relevance_ranking_method"] = "lexical_fallback_llm_unavailable"
+        records.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+        return records, "llm_unavailable_lexical_fallback"
+
+    feature_payload = {
+        category: [{"feature_id": f.get("feature_id"), "feature": f.get("text")} for f in items]
+        for category, items in feature_matrix.items()
     }
+    for start in range(0, len(records), RERANK_BATCH_SIZE):
+        batch = records[start:start + RERANK_BATCH_SIZE]
+        papers = []
+        for idx, record in enumerate(batch):
+            papers.append({
+                "candidate_id": idx,
+                "title": record.get("title"),
+                "abstract": (record.get("abstract") or "")[:5000],
+                "semantic_scholar_tldr": (record.get("tldr") or "")[:1000],
+                "publication_date": record.get("publication_date"),
+            })
+        prompt = f"""You are assisting a patent professional with preliminary non-patent literature discovery. This is triage, not a legal opinion.
+Compare each paper's title, abstract and (when present) Semantic Scholar TLDR with the invention feature matrix.
+Score each paper from 0 to 100 for technical relevance/overlap, not general topical similarity. A high score requires a meaningful match to one or more concrete features or mechanisms. Do not infer disclosure that is absent from the provided text. Missing abstracts/TLDR are not proof of irrelevance.
+Return ONLY JSON: {{"evaluations":[{{"candidate_id":0,"score":0,"matched_feature_ids":[],"rationale":"short evidence-based explanation","evidence_phrases":[]}}]}}.
+Use concise rationales. Evidence phrases must be short phrases copied from the supplied paper text. Do not make legal novelty/patentability conclusions.
+Feature matrix:
+{json.dumps(feature_payload, ensure_ascii=False)}
+Candidates:
+{json.dumps(papers, ensure_ascii=False)}"""
+        try:
+            response = await llm.ainvoke(prompt)
+            parsed = _parse_json_content(_llm_content(response))
+            evaluations = parsed.get("evaluations", [])
+            for evaluation in evaluations:
+                if not isinstance(evaluation, dict):
+                    continue
+                idx = evaluation.get("candidate_id")
+                if not isinstance(idx, int) or idx < 0 or idx >= len(batch):
+                    continue
+                record = batch[idx]
+                score = evaluation.get("score", 0)
+                try:
+                    score = max(0.0, min(100.0, float(score)))
+                except (TypeError, ValueError):
+                    score = 0.0
+                record["relevance_score"] = round(score, 2)
+                record["matched_feature_ids"] = evaluation.get("matched_feature_ids") or []
+                record["relevance_rationale"] = str(evaluation.get("rationale") or "")[:1200]
+                record["evidence_phrases"] = evaluation.get("evidence_phrases") or []
+                record["relevance_ranking_method"] = "llm_feature_matrix"
+        except Exception as exc:
+            print(f"NPL LLM rerank batch failed: {exc}")
+            for record in batch:
+                if "relevance_score" not in record:
+                    record["relevance_score"] = round(record.get("pre_rank_score", 0.0), 2)
+                    record["matched_feature_ids"] = []
+                    record["relevance_rationale"] = "LLM evaluation unavailable; showing preliminary lexical score."
+                    record["evidence_phrases"] = []
+                    record["relevance_ranking_method"] = "lexical_fallback_batch_error"
 
-    # Use the existing ApplicationContext audit service when available.
+    records.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+    for rank, record in enumerate(records, start=1):
+        record["relevance_rank"] = rank
+    return records, "llm_feature_matrix"
+
+
+async def _search_npl_three_sources_async(state: PatentState, config: RunnableConfig) -> dict[str, Any]:
+    """Search Semantic Scholar, OpenAlex and arXiv concurrently, deduplicate and rerank."""
+    invention = state.get("invention")
+    if invention is None:
+        raise ValueError("InventionRepresentation is missing from state. Run decompose_invention first.")
+
+    feature_matrix = _features_by_category(invention)
+    if not any(feature_matrix.values()):
+        summary = {"status": "no_features", "raw_result_count": 0, "deduplicated_count": 0, "provider_calls": []}
+        return {"npl_queries": [], "npl_results": [], "npl_search_summary": summary}
+
     configurable = (config or {}).get("configurable", {})
     context = configurable.get("context")
-    thread_id = configurable.get("thread_id")
-    audit = getattr(context, "audit", None) if context else None
+    plan = await _llm_query_plan(context, feature_matrix)
+    timeout = httpx.Timeout(HTTP_TIMEOUT_SECONDS, connect=10.0)
+    limits = httpx.Limits(max_connections=12, max_keepalive_connections=6)
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json, application/atom+xml, application/xml"}
+    async with httpx.AsyncClient(timeout=timeout, limits=limits, headers=headers, follow_redirects=True) as client:
+        tasks = []
+        # Share one lock/rate clock across every Semantic Scholar query in this run.
+        # OpenAlex and arXiv remain concurrent with each other and with S2 waits.
+        semantic_scholar_lock = asyncio.Lock()
+        semantic_scholar_rate_state: dict[str, float] = {"last_request_at": 0.0}
+        for item in plan:
+            tasks.extend([
+                _search_semantic_scholar(client, item, semantic_scholar_lock, semantic_scholar_rate_state),
+                _search_openalex(client, item),
+                _search_arxiv(client, item),
+            ])
+        # All provider/category requests are launched together; failures are isolated per source.
+        outcomes = await asyncio.gather(*tasks, return_exceptions=False)
 
+    raw_results = [record for outcome in outcomes for record in outcome["results"]]
+    deduplicated = _deduplicate(raw_results)
+    for record in deduplicated:
+        record["pre_rank_score"] = round(_pre_rank(record, feature_matrix), 2)
+    # Use lexical feature overlap only to shortlist up to 50 candidates for LLM evaluation.
+    shortlist = sorted(deduplicated, key=lambda x: x.get("pre_rank_score", 0), reverse=True)[:RERANK_CANDIDATE_LIMIT]
+    ranked, ranking_method = await _rerank_with_llm(context, shortlist, feature_matrix)
+    ranked_ids = {id(record) for record in ranked}
+    # Keep remaining deduplicated results available for audit/review, but mark them as not LLM-ranked.
+    unranked = [record for record in deduplicated if id(record) not in ranked_ids]
+    for record in unranked:
+        record["relevance_score"] = None
+        record["relevance_rank"] = None
+        record["relevance_ranking_method"] = "not_in_top_50_candidates"
+    final_results = ranked + unranked
+
+    provider_calls = [{k: outcome[k] for k in ("provider", "category", "count", "elapsed_seconds", "error")} for outcome in outcomes]
+    summary = {
+        "status": "success" if raw_results else ("provider_error" if any(x["error"] for x in provider_calls) else "no_results"),
+        "query_count": len(plan),
+        "provider_request_count": len(outcomes),
+        "raw_result_count": len(raw_results),
+        "deduplicated_count": len(deduplicated),
+        "duplicates_removed": len(raw_results) - len(deduplicated),
+        "llm_rerank_candidate_count": len(shortlist),
+        "llm_rerank_count": sum(1 for x in ranked if x.get("relevance_ranking_method") == "llm_feature_matrix"),
+        "ranking_method": ranking_method,
+        "provider_calls": sorted(provider_calls, key=lambda x: (x["provider"], x["category"])),
+    }
+
+    audit = getattr(context, "audit", None) if context is not None else None
     if audit is not None:
         try:
-            audit.log_model_call(
-                thread_id,
-                "search_npl_openalex_crossref",
-                f"NPL discovery across {len(plan)} feature categories",
-                summary,
+            audit_result = audit.log_model_call(
+                configurable.get("thread_id"), "search_npl_three_sources",
+                f"Concurrent Semantic Scholar/OpenAlex/arXiv searches across {len(plan)} feature categories", summary,
             )
-        except Exception as exc:
-            # Audit failure must not discard the literature results.
-            print(f"NPL audit logging failed: {exc}")
+            if hasattr(audit_result, "__await__"):
+                await audit_result
+        except Exception:
+            # Audit failure should not discard search results.
+            pass
 
-    print(f"NPL search completed: status={status}, raw={len(raw_results)}, unique={len(unique_results)}, duplicates_removed={summary['duplicates_removed']}")
+    print(f"NPL search complete: {len(raw_results)} raw, {len(deduplicated)} unique, {len(shortlist)} rerank candidates.")
+    return {"npl_queries": plan, "npl_results": final_results, "npl_search_summary": summary}
 
-    for call in provider_calls:
-        print(f"{call['provider']} / {call['category']}: {call['count']} results; elapsed={call['elapsed_seconds']}s; error={call['error']}")
+def search_npl_three_sources(state: PatentState, config: RunnableConfig) -> dict[str, Any]:
+    """Synchronous LangGraph adapter for applications using graph.stream()/invoke().
 
-    return {
-        "npl_queries": plan,
-        "npl_results": unique_results,
-        "npl_search_summary": summary,
-    }
+    The provider requests still run concurrently inside the async implementation.
+    This wrapper lets the existing synchronous graph call the node without changing
+    the rest of the application's invocation model.
+    """
+    return asyncio.run(_search_npl_three_sources_async(state, config))

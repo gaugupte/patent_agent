@@ -68,8 +68,3 @@ class GraphState(TypedDict):
     token_usage: Annotated[int, operator.add]
 
     max_tool_calls: int
-
-    # PORT = int(os.getenv("PORT", "3000"))
-    # os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
-    # os.environ.setdefault("LANGSMITH_TRACING", "true")
-    # os.environ.setdefault("LANGCHAIN_PROJECT", "lg-template")

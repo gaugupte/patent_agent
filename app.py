@@ -64,7 +64,8 @@ async def predict(request: Request, session_id: str = Form(...), idf_file: Uploa
             "configurable": {"thread_id": session_id},
             "context": context,
         }
-        result = context.graph.invoke(state, config=config)
+        # result = context.graph.invoke(state, config=config)
+        result = await context.graph.ainvoke(state, config=config)
         print(result)
         return result
     except Exception as e:

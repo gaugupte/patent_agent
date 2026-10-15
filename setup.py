@@ -10,8 +10,9 @@
 
 * ? additional information regarding how to start & and use this on local
 ollama run mistral
-#uvicorn app:app --reload --port 8000 #-- to start the server
 python -m uvicorn app:app --reload
+#uvicorn app:app --reload --port 8000 #-- to start the server
+
 curl.exe -X POST "http://localhost:8000/predict" -F "session_id=test-001" -F "idf_file=@input/idf_file.txt"
 curl.exe -X POST "http://localhost:8000/predict" -F "session_id=test-001" -F "idf_file=@input/US12736584B2.txt"
 curl.exe -X POST "http://localhost:8000/predict" -F "session_id=test-001" -F "idf_file=@input/202521087280.txt"

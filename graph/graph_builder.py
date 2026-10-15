@@ -18,14 +18,13 @@
 #   ↓
 # END
 
-from flatbuffers import builder
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import RetryPolicy
 from graph.nodes import decompose_invention, generate_keywords, lookup_cpc, generate_uspto_queries, generate_espacenet_queries, create_client_report
 from config.state import PatentState
-from graph.npl_search import search_npl_openalex_crossref
+from graph.npl_search import search_npl_three_sources
 
 
 def build_graph():
@@ -66,7 +65,7 @@ def build_graph():
     builder.add_node("lookup_cpc", lookup_cpc)
     builder.add_node("generate_uspto_queries", generate_uspto_queries)
     builder.add_node("generate_espacenet_queries", generate_espacenet_queries)
-    builder.add_node("search_npl_openalex_crossref", search_npl_openalex_crossref)
+    builder.add_node("search_npl_three_sources", search_npl_three_sources)
     builder.add_node("create_client_report", create_client_report)
 
     builder.add_edge(START, "decompose_invention")
@@ -74,8 +73,8 @@ def build_graph():
     builder.add_edge("generate_keywords", "lookup_cpc")
     builder.add_edge("lookup_cpc", "generate_uspto_queries")
     builder.add_edge("generate_uspto_queries", "generate_espacenet_queries")
-    builder.add_edge("generate_espacenet_queries", "search_npl_openalex_crossref")
-    builder.add_edge("search_npl_openalex_crossref", "create_client_report")
+    builder.add_edge("generate_espacenet_queries", "search_npl_three_sources")
+    builder.add_edge("search_npl_three_sources", "create_client_report")
     builder.add_edge("create_client_report", END)
     # builder.add_edge("lookup_cpc", "generate_uspto_queries")
     # builder.add_edge("generate_uspto_queries", "generate_espacenet_queries")

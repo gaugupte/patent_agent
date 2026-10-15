@@ -34,7 +34,11 @@ class ReportService:
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        filename = f"patent_analysis_{session_id}_{timestamp}.docx"
+        safe_session_id = "".join(
+            ch if ch.isalnum() or ch in ("-", "_") else "_"
+            for ch in str(session_id)
+        ) or "session"
+        filename = f"patent_analysis_{safe_session_id}_{timestamp}.docx"
 
         report_path = self.output_dir / filename
 
@@ -57,14 +61,17 @@ class ReportService:
         report_path,
     ):
 
-        invention = state["invention"]
-        keywords = state["keywords"]
-        cpc_analysis = state["cpc_analysis"]
+        # LangGraph state values may be dictionaries or Pydantic objects.
+        invention = self._get(state, "invention")
+        if invention is None:
+            raise ValueError("Cannot create patent report: state is missing 'invention'.")
 
-        # These are produced by the two new nodes
-        uspto_queries = state.get("uspto_queries")
-
-        espacenet_queries = state.get("espacenet_queries")
+        keywords = self._get(state, "keywords")
+        cpc_analysis = self._get(state, "cpc_analysis")
+        uspto_queries = self._get(state, "uspto_queries")
+        espacenet_queries = self._get(state, "espacenet_queries")
+        npl_results = self._get(state, "npl_results", []) or []
+        npl_summary = self._get(state, "npl_search_summary", {}) or {}
 
         document = Document()
 
@@ -104,19 +111,21 @@ class ReportService:
         # 3. Search Vocabulary
         # -----------------------------------------------------
 
-        self._add_search_vocabulary(
-            document,
-            keywords,
-        )
+        if keywords:
+            self._add_search_vocabulary(document, keywords)
+        else:
+            document.add_heading("3. Search Vocabulary", level=1)
+            document.add_paragraph("Search vocabulary was not available in the graph state for this run.")
 
         # -----------------------------------------------------
         # 4. CPC Analysis
         # -----------------------------------------------------
 
-        self._add_cpc_analysis(
-            document,
-            cpc_analysis,
-        )
+        if cpc_analysis:
+            self._add_cpc_analysis(document, cpc_analysis)
+        else:
+            document.add_heading("4. CPC Classification Analysis", level=1)
+            document.add_paragraph("CPC analysis was not available in the graph state for this run.")
 
         # -----------------------------------------------------
         # 5. USPTO Queries
@@ -143,21 +152,22 @@ class ReportService:
             )
 
         # -----------------------------------------------------
-        # 7. Methodology
+        # 7. Non-Patent Literature (NPL) Search Results
         # -----------------------------------------------------
 
-        self._add_methodology(
-            document,
-        )
+        self._add_npl_results(document, npl_results, npl_summary)
 
         # -----------------------------------------------------
-        # 8. Traceability
+        # 8. Methodology
         # -----------------------------------------------------
 
-        self._add_traceability(
-            document,
-            session_id,
-        )
+        self._add_methodology(document, npl_summary=npl_summary)
+
+        # -----------------------------------------------------
+        # 9. Traceability
+        # -----------------------------------------------------
+
+        self._add_traceability(document, session_id, npl_summary=npl_summary)
 
         # -----------------------------------------------------
         # Confidentiality
@@ -276,11 +286,7 @@ class ReportService:
             ),
             (
                 "Invention Title",
-                getattr(
-                    invention,
-                    "title",
-                    "[INVENTION TITLE]",
-                ),
+                self._get(invention, "title", "[INVENTION TITLE]"),
             ),
             (
                 "CPC Corpus Version",
@@ -333,7 +339,7 @@ class ReportService:
             level=1,
         )
 
-        document.add_paragraph(invention.invention_summary)
+        document.add_paragraph(str(self._get(invention, "invention_summary", "Summary not available.")))
 
     # =========================================================
     # 2. INVENTION DECOMPOSITION
@@ -355,21 +361,21 @@ class ReportService:
         self._add_feature_table(
             document,
             "2.1 Structural Features",
-            invention.structural_features,
+            self._get(invention, "structural_features", []) or [],
             "Structural",
         )
 
         self._add_feature_table(
             document,
             "2.2 Procedural / Process Features",
-            invention.procedural_features,
+            self._get(invention, "procedural_features", []) or [],
             "Procedural",
         )
 
         self._add_feature_table(
             document,
             "2.3 Functional Features",
-            invention.functional_features,
+            self._get(invention, "functional_features", []) or [],
             "Functional",
         )
 
@@ -422,17 +428,17 @@ class ReportService:
 
             self._set_cell(
                 row.cells[0],
-                item.feature_id,
+                self._get(item, "feature_id", ""),
             )
 
             if feature_type == "Structural":
-                description = item.feature
+                description = self._get(item, "feature", "")
 
             elif feature_type == "Procedural":
-                description = item.step
+                description = self._get(item, "step", "")
 
             elif feature_type == "Functional":
-                description = item.function
+                description = self._get(item, "function", "")
 
             else:
                 description = ""
@@ -444,7 +450,7 @@ class ReportService:
 
             self._set_cell(
                 row.cells[2],
-                item.details,
+                self._get(item, "details", ""),
             )
 
         document.add_paragraph()
@@ -469,19 +475,19 @@ class ReportService:
         self._add_keyword_table(
             document,
             "3.1 Structural Keywords",
-            keywords.structural_keywords,
+            self._get(keywords, "structural_keywords", []) or [],
         )
 
         self._add_keyword_table(
             document,
             "3.2 Procedural / Process Keywords",
-            keywords.procedural_keywords,
+            self._get(keywords, "procedural_keywords", []) or [],
         )
 
         self._add_keyword_table(
             document,
             "3.3 Functional Keywords",
-            keywords.functional_keywords,
+            self._get(keywords, "functional_keywords", []) or [],
         )
 
         document.add_heading(
@@ -519,7 +525,7 @@ class ReportService:
         )
 
         for index, keyword in enumerate(
-            keywords.consolidated_keywords,
+            self._get(keywords, "consolidated_keywords", []) or [],
             start=1,
         ):
             row = table.add_row()
@@ -585,20 +591,23 @@ class ReportService:
 
             self._set_cell(
                 row.cells[0],
-                item.feature_id,
+                self._get(item, "feature_id", ""),
             )
 
             self._set_cell(
                 row.cells[1],
-                item.feature,
+                self._get(item, "feature", ""),
             )
 
             self._set_cell(
                 row.cells[2],
-                "; ".join(item.primary_keywords),
+                "; ".join(self._as_list(self._get(item, "primary_keywords", []))),
             )
 
-            alternatives = item.synonyms + item.alternative_terms
+            alternatives = (
+                self._as_list(self._get(item, "synonyms", []))
+                + self._as_list(self._get(item, "alternative_terms", []))
+            )
 
             self._set_cell(
                 row.cells[3],
@@ -653,32 +662,32 @@ class ReportService:
                 "D9EAD3",
             )
 
-        for candidate in cpc_analysis.candidates:
+        for candidate in (self._get(cpc_analysis, "candidates", []) or []):
             row = table.add_row()
 
             self._set_cell(
                 row.cells[0],
-                candidate.cpc_code,
+                self._get(candidate, "cpc_code", ""),
             )
 
             self._set_cell(
                 row.cells[1],
-                candidate.title,
+                self._get(candidate, "title", ""),
             )
 
             self._set_cell(
                 row.cells[2],
-                candidate.feature_id or "",
+                self._get(candidate, "feature_id", "") or "",
             )
 
             self._set_cell(
                 row.cells[3],
-                candidate.relevance,
+                self._get(candidate, "relevance", ""),
             )
 
             self._set_cell(
                 row.cells[4],
-                candidate.reason,
+                self._get(candidate, "reason", ""),
             )
 
         document.add_paragraph()
@@ -717,13 +726,13 @@ class ReportService:
         document.add_paragraph(
             "The queries documented below are search statements prepared for execution in the respective patent search system. This report does not represent the results of executing these searches."
         )
-        for index, item in enumerate(query_analysis.queries, start=1):
+        for index, item in enumerate(self._get(query_analysis, "queries", []) or [], start=1):
             # -----------------------------------------------------
             # Query title
             # -----------------------------------------------------
 
             paragraph = document.add_paragraph()
-            run = paragraph.add_run(f"{index}. {item.query_name}")
+            run = paragraph.add_run(f"{index}. {self._get(item, 'query_name', f'Query {index}')}")
             run.bold = True
             run.font.size = Pt(11)
 
@@ -734,7 +743,7 @@ class ReportService:
             paragraph = document.add_paragraph()
             run = paragraph.add_run("Priority: ")
             run.bold = True
-            priority_run = paragraph.add_run(item.priority)
+            priority_run = paragraph.add_run(str(self._get(item, "priority", "Not specified")))
 
             # -----------------------------------------------------
             # Purpose
@@ -743,7 +752,7 @@ class ReportService:
             paragraph = document.add_paragraph()
             run = paragraph.add_run("Purpose: ")
             run.bold = True
-            paragraph.add_run(item.purpose)
+            paragraph.add_run(str(self._get(item, "purpose", "Not specified")))
 
             # -----------------------------------------------------
             # Target Features
@@ -752,11 +761,12 @@ class ReportService:
             # exists in either query model.
             # -----------------------------------------------------
 
-            if hasattr(item, "feature_ids") and item.feature_ids:
+            feature_ids = self._get(item, "feature_ids", []) or []
+            if feature_ids:
                 paragraph = document.add_paragraph()
                 run = paragraph.add_run("Target Features: ")
                 run.bold = True
-                paragraph.add_run(", ".join(item.feature_ids))
+                paragraph.add_run(", ".join(str(value) for value in feature_ids))
 
             # -----------------------------------------------------
             # Query
@@ -766,47 +776,179 @@ class ReportService:
             table.style = "Table Grid"
             cell = table.rows[0].cells[0]
             self._shade_cell(cell, "F3F3F3")
-            self._set_cell(cell, item.query)
+            self._set_cell(cell, self._get(item, "query", ""))
             document.add_paragraph()
 
     # =========================================================
-    # 7. METHODOLOGY
+    # 7. NON-PATENT LITERATURE SEARCH RESULTS
     # =========================================================
 
-    def _add_methodology(self, document):
-        document.add_heading("7. Methodology and Scope", level=1)
+    def _add_npl_results(self, document, results, summary):
+        document.add_heading("7. Non-Patent Literature (NPL) Search Results", level=1)
+        document.add_paragraph(
+            "This section lists scholarly/preprint records discovered by the automated search. "
+            "Relevance scores are machine-assisted triage signals, not legal conclusions. "
+            "Source records should be opened and reviewed by the patent practitioner."
+        )
+
+        summary = summary if isinstance(summary, dict) else {}
+        status = summary.get("status", "not_run")
+        metrics = [
+            ("Search status", status),
+            ("Queries issued", summary.get("query_count", 0)),
+            ("Provider requests", summary.get("provider_request_count", 0)),
+            ("Raw records", summary.get("raw_result_count", len(results))),
+            ("Unique records", summary.get("deduplicated_count", len(results))),
+            ("LLM-ranked candidates", summary.get("llm_rerank_count", 0)),
+        ]
+        table = document.add_table(rows=0, cols=2)
+        table.style = "Table Grid"
+        for label, value in metrics:
+            cells = table.add_row().cells
+            self._set_cell(cells[0], label, bold=True)
+            self._shade_cell(cells[0], "E7E6E6")
+            self._set_cell(cells[1], value if value is not None else "—")
+
+        provider_calls = summary.get("provider_calls", []) or []
+        if provider_calls:
+            document.add_heading("7.1 Provider Diagnostics", level=2)
+            diagnostics = document.add_table(rows=1, cols=5)
+            diagnostics.style = "Table Grid"
+            for i, heading in enumerate(("Provider", "Category", "Records", "Seconds", "Error")):
+                self._set_cell(diagnostics.rows[0].cells[i], heading, bold=True)
+                self._shade_cell(diagnostics.rows[0].cells[i], "D9EAF7")
+            for call in provider_calls:
+                cells = diagnostics.add_row().cells
+                for i, key in enumerate(("provider", "category", "count", "elapsed_seconds", "error")):
+                    value = call.get(key, "")
+                    if key == "elapsed_seconds" and isinstance(value, (int, float)):
+                        value = f"{value:.2f}"
+                    self._set_cell(cells[i], value if value not in (None, "") else "—")
+
+        if not results:
+            document.add_paragraph("No NPL records were returned. This may reflect search coverage, query formulation, provider availability or lack of indexed results; it should not be interpreted as evidence that no relevant literature exists.")
+            return
+
+        document.add_heading("7.2 Ranked and Discovered References", level=2)
+        for index, record in enumerate(results, start=1):
+            title = self._get(record, "title", "Untitled record") or "Untitled record"
+            rank = self._get(record, "relevance_rank")
+            score = self._get(record, "relevance_score")
+            label = f"{rank}. " if rank else f"Record {index}. "
+            paragraph = document.add_paragraph()
+            run = paragraph.add_run(label + str(title))
+            run.bold = True
+            if score is not None:
+                paragraph.add_run(f"  |  Relevance score: {score}/100")
+
+            authors = self._as_list(self._get(record, "authors", []))
+            date = self._get(record, "publication_date") or self._get(record, "year") or "Date not available"
+            venue = self._get(record, "venue") or "Venue not available"
+            providers = self._as_list(self._get(record, "source_providers", []))
+            if not providers:
+                providers = self._as_list(self._get(record, "source_provider", []))
+            doi = self._get(record, "doi")
+            arxiv_id = self._get(record, "arxiv_id")
+            url = self._get(record, "url") or self._get(record, "open_access_url")
+
+            metadata = document.add_paragraph()
+            metadata.add_run("Authors: ").bold = True
+            metadata.add_run(", ".join(str(a) for a in authors[:8]) or "Not available")
+            metadata.add_run("  |  Date: ").bold = True
+            metadata.add_run(str(date))
+            metadata.add_run("  |  Venue: ").bold = True
+            metadata.add_run(str(venue))
+
+            identifiers = document.add_paragraph()
+            identifiers.add_run("Source(s): ").bold = True
+            identifiers.add_run(", ".join(str(p) for p in providers) or "Not specified")
+            if doi:
+                identifiers.add_run("  |  DOI: ").bold = True
+                identifiers.add_run(str(doi))
+            if arxiv_id:
+                identifiers.add_run("  |  arXiv ID: ").bold = True
+                identifiers.add_run(str(arxiv_id))
+            if url:
+                link_p = document.add_paragraph()
+                link_p.add_run("Source link: ").bold = True
+                link_p.add_run(str(url))
+
+            abstract = self._get(record, "abstract")
+            tldr = self._get(record, "tldr") or self._get(record, "semantic_scholar_tldr")
+            if abstract:
+                p = document.add_paragraph()
+                p.add_run("Abstract: ").bold = True
+                p.add_run(str(abstract)[:4000])
+            if tldr:
+                p = document.add_paragraph()
+                p.add_run("Semantic Scholar TLDR: ").bold = True
+                p.add_run(str(tldr)[:1200])
+
+            matched = self._as_list(self._get(record, "matched_feature_ids", []))
+            if matched:
+                p = document.add_paragraph()
+                p.add_run("Matched invention features: ").bold = True
+                p.add_run(", ".join(str(x) for x in matched))
+            rationale = self._get(record, "relevance_rationale")
+            if rationale:
+                p = document.add_paragraph()
+                p.add_run("Relevance rationale: ").bold = True
+                p.add_run(str(rationale)[:2000])
+            evidence = self._as_list(self._get(record, "evidence_phrases", []))
+            if evidence:
+                p = document.add_paragraph()
+                p.add_run("Evidence phrases: ").bold = True
+                p.add_run("; ".join(str(x) for x in evidence[:8]))
+            document.add_paragraph()
+
+    # =========================================================
+    # 8. METHODOLOGY
+    # =========================================================
+
+    def _add_methodology(self, document, npl_summary=None):
+        document.add_heading("8. Methodology and Scope", level=1)
         points = [
-            ("The client-provided IDF was converted into a structured representation of structural, procedural/process and functional features."),
-            ("Technical keywords, synonyms and alternative terminology were generated independently for each feature category and then consolidated."),
-            ("CPC candidates were retrieved using semantic similarity against the CPC 2026.08 corpus."),
-            ("Retrieved CPC candidates were evaluated for technical relevance using the language model."),
-            ("USPTO and Espacenet search queries were constructed from the generated search vocabulary and CPC classifications using the respective search-system field syntax."),
-            ("The generated queries are intended to support professional patent searching and should be reviewed and refined by the patent practitioner."),
-            ("This report represents an analytical search-preparation and classification stage and is not, by itself, a legal opinion on novelty, inventive step or patentability."),
+            "The client-provided IDF was converted into a structured representation of structural, procedural/process and functional features.",
+            "Technical keywords, synonyms and alternative terminology were generated independently for each feature category and then consolidated.",
+            "CPC candidates were retrieved using semantic similarity against the CPC 2026.08 corpus.",
+            "Retrieved CPC candidates were evaluated for technical relevance using the language model.",
+            "USPTO and Espacenet search queries were constructed from the generated search vocabulary and CPC classifications using the respective search-system field syntax.",
+            "NPL discovery searched available scholarly/preprint metadata sources, normalized records, deduplicated identifiers and used machine-assisted relevance triage when configured.",
+            "NPL results are limited by provider coverage, indexing, query formulation and available metadata. Absence of a result does not establish absence of relevant prior art.",
+            "The generated queries and NPL references are intended to support professional searching and should be reviewed and refined by the patent practitioner.",
+            "This report is not, by itself, a legal opinion on novelty, inventive step or patentability.",
         ]
         for point in points:
             document.add_paragraph(point, style="List Bullet")
 
     # =========================================================
-    # 8. TRACEABILITY
+    # 9. TRACEABILITY
     # =========================================================
 
-    def _add_traceability(self, document, session_id):
-        document.add_heading("8. Traceability", level=1)
-        table = document.add_table(rows=5, cols=2)
-        table.style = "Table Grid"
+    def _add_traceability(self, document, session_id, npl_summary=None):
+        document.add_heading("9. Traceability", level=1)
+        summary = npl_summary if isinstance(npl_summary, dict) else {}
+        stages = (
+            "Decomposition → Keywords → CPC Retrieval/Evaluation → USPTO Query Generation → "
+            "Espacenet Query Generation → Semantic Scholar/OpenAlex/arXiv NPL Search → "
+            "Deduplication and Relevance Triage → Client Report"
+        )
         values = [
             ("Session ID", session_id),
             ("Analysis Date", datetime.now().isoformat(timespec="seconds")),
             ("CPC Version", "2026.08"),
-            ("Analysis Stages", "Decomposition → Keywords → CPC Retrieval → CPC Evaluation → USPTO Query Generation → Espacenet Query Generation"),
-            ("Report Status"),
-            ("Generated from structured graph state"),
+            ("Analysis Stages", stages),
+            ("NPL Search Status", summary.get("status", "not_run")),
+            ("NPL Unique Records", summary.get("deduplicated_count", 0)),
+            ("Report Status", "Generated from structured graph state"),
         ]
-        for row, values in zip(table.rows, values):
-            self._set_cell(row.cells[0], values[0], bold=True)
-            self._shade_cell(row.cells[0], "E7E6E6")
-            self._set_cell(row.cells[1], values[1])
+        table = document.add_table(rows=0, cols=2)
+        table.style = "Table Grid"
+        for label, value in values:
+            cells = table.add_row().cells
+            self._set_cell(cells[0], label, bold=True)
+            self._shade_cell(cells[0], "E7E6E6")
+            self._set_cell(cells[1], value if value is not None else "—")
 
     # =========================================================
     # CONFIDENTIALITY
@@ -833,6 +975,28 @@ class ReportService:
             "freedom-to-operate, validity or other legal "
             "decision."
         )
+
+    @staticmethod
+    def _get(obj, key, default=None):
+        """Read a field from either a dictionary or an object/Pydantic model."""
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    @staticmethod
+    def _as_list(value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, tuple):
+            return list(value)
+        if isinstance(value, str):
+            return [value] if value else []
+        try:
+            return list(value)
+        except TypeError:
+            return [value]
 
     # =========================================================
     # TABLE HELPERS
