@@ -7,6 +7,41 @@
 * ? Usage:  As needed, you can run the commands in this file to start the server, test endpoints, and manage environment variables for the application. The commands can be executed in a terminal or command prompt.
 */
 """
+# ===============================================================================================================
+# New portal:
+  Open **four PowerShell terminals** in the project root: `E:\Gautam\work_folder\own\nlp\patent_agent`.
+
+  **Terminal 1 — FastAPI:**
+  ```powershell
+  uvicorn app:app --host 127.0.0.1 --port 8000
+  ```
+
+  **Terminal 2 — Django:**
+  ```powershell
+  python web_portal/manage.py runserver 127.0.0.1:8001
+  ```
+
+  **Terminal 3 — React:**
+  ```powershell
+  cd web_portal/frontend
+  npm run dev
+  ```
+  Keep all three terminals running, then open **http://127.0.0.1:5173/**. Use your regular organization user to sign in; the admin superuser signs in at **http://127.0.0.1:8001/admin/**.
+
+  If this is the first run, install dependencies and initialize Django once:
+  ```powershell
+  python -m pip install -r requirements.txt
+  python -m pip install -r web_portal/requirements.txt
+  python web_portal/manage.py migrate
+  python web_portal/manage.py createsuperuser
+```
+
+
+
+# =================================================================================================================
+
+
+
 
 * ? additional information regarding how to start & and use this on local
 ollama run mistral
