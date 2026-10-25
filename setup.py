@@ -9,11 +9,14 @@
 """
 # ===============================================================================================================
 # New portal:
+
+  ollama run mistral
   Open **four PowerShell terminals** in the project root: `E:\Gautam\work_folder\own\nlp\patent_agent`.
 
   **Terminal 1 — FastAPI:**
   ```powershell
-  uvicorn app:app --host 127.0.0.1 --port 8000
+  python -m uvicorn main:app --reload
+  # uvicorn app:app --host 127.0.0.1 --port 8000
   ```
 
   **Terminal 2 — Django:**
@@ -34,6 +37,9 @@
   python -m pip install -r web_portal/requirements.txt
   python web_portal/manage.py migrate
   python web_portal/manage.py createsuperuser
+
+  Set-ExecutionPolicy -Scope Process Bypass
+.\run_project.ps1
 ```
 
 
