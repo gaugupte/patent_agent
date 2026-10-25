@@ -5,16 +5,19 @@ import { api, downloadReport } from './api';
 import './styles.css';
 
 const Auth = createContext(null);
-const useAuth = () => useContext(Auth);
+const useAuth = () => useContext(Auth); // #this is function definition
 const message = (error) => error instanceof Error ? error.message : 'Something went wrong.';
 
+// this a component that provides authentication context to its children. It manages the user state and provides a refresh function to fetch the current user data from the API.
 function AuthProvider({ children }) {
-  const [user, setUser] = useState(undefined);
+  const [user, setUser] = useState(undefined);   // hook to manage user state, initially undefined. setUser is a function to update the user state.
   const refresh = () => api('/auth/me/').then(setUser).catch(() => setUser(null));
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => { refresh(); }, []); //useEffect hook to call refresh function on component mount, which fetches the current user data from the API and updates the user state.
   return <Auth.Provider value={{ user, setUser, refresh }}>{children}</Auth.Provider>;
 }
 
+// Protected component checks if the user is authenticated. If the user is undefined, it shows a loading message. If the user is authenticated, it renders the Shell component with the Outlet for nested routes. If the user is not authenticated, it redirects to the login page.
+// it is called in the RoutesRoot component to protect certain routes that require authentication.
 function Protected() {
   const { user } = useAuth();
   const location = useLocation();
@@ -23,9 +26,9 @@ function Protected() {
 }
 
 function Shell({ children }) {
-  const { user, setUser } = useAuth();
-  const navigate = useNavigate();
-  const location = useLocation();
+  const { user, setUser } = useAuth();// useAuth hook to access the user state and setUser function from the Auth context.
+  const navigate = useNavigate(); // useNavigate hook to programmatically navigate to different routes.
+  const location = useLocation(); // useLocation hook to access the current location object, which contains information about the current URL.
   const signOut = async () => { try { await api('/auth/logout/', { method: 'POST' }); } finally { setUser(null); navigate('/login'); } };
   return <div className="app-shell">
     <aside className="sidebar">
@@ -94,9 +97,27 @@ function NewInvention() {
 }
 
 function NewCustomer() {
-  const navigate = useNavigate(); const [name, setName] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
-  const submit = async e => { e.preventDefault(); setBusy(true); setError(''); try { await api('/customers/create/', { method: 'POST', body: JSON.stringify({ name }) }); navigate('/inventions', { replace: true }); } catch (err) { setError(message(err)); } finally { setBusy(false); } };
-  return <div className="content narrow"><PageTitle eyebrow="ORGANIZATION" title="Add a customer" description="Customers help you group invention disclosures within your workspace." /><Notice error={error} /><form className="card form" onSubmit={submit}><label>Customer name<input value={name} maxLength={160} onChange={e => setName(e.target.value)} placeholder="Enter customer or client name" required /></label><div className="form-actions"><Link className="button ghost" to="/inventions">Cancel</Link><button className="button primary" disabled={busy}>{busy ? 'Saving…' : 'Save customer'}</button></div></form></div>;
+  const navigate = useNavigate(); 
+  const [name, setName] = useState(''); 
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async e => 
+    { e.preventDefault(); setBusy(true);
+      setError(''); 
+      try {
+         await api('/customers/create/', { method: 'POST', body: JSON.stringify({ name }) });
+         navigate('/inventions', { replace: true }); } 
+      catch (err) { setError(message(err)); } 
+      finally { setBusy(false); } };
+  return <div className="content narrow">
+        <PageTitle eyebrow="ORGANIZATION" title="Add a customer" description="Customers help you group invention disclosures within your workspace." />
+        <Notice error={error} />
+        <form className="card form" onSubmit={submit}>
+          <label>Customer name<input value={name} maxLength={160} onChange={e => setName(e.target.value)} 
+          placeholder="Enter customer or client name" required /></label>
+          <div className="form-actions">
+            <Link className="button ghost" to="/inventions">Cancel</Link>
+            <button className="button primary" disabled={busy}>{busy ? 'Saving…' : 'Save customer'}</button></div></form></div>;
 }
 
 function InventionDetail() {
@@ -117,9 +138,105 @@ function InventionDetail() {
 function Analysis({ version }) {
   const result = version.analysis_result || {};
   const sections = Object.entries(result).filter(([, value]) => value !== null && value !== undefined && value !== '');
-  return <details className="analysis-card"><summary><span><b>Analysis results · Version {version.number}</b><small>Completed {formatDate(version.completed_at)}</small></span><span className="summary-toggle">＋</span></summary><div className="analysis-content">{sections.length ? sections.map(([key, value]) => <section key={key}><h3>{key.replaceAll('_', ' ')}</h3><AnalysisValue value={value} /></section>) : <p className="muted">No structured analysis details were returned.</p>}</div></details>;
+  return <details className="analysis-card"><summary><span className="analysis-heading"><b>Analysis results <span>Version {version.number}</span></b><small>Completed {formatDate(version.completed_at)}{sections.length ? ` · ${sections.length} sections` : ''}</small></span><span className="summary-toggle" aria-hidden="true">＋</span></summary><div className="analysis-content">{sections.length ? <div className="analysis-sections">{sections.map(([key, value], index) => <section className="analysis-section" key={key}><header><span className="analysis-section-number">{String(index + 1).padStart(2, '0')}</span><h3>{analysisLabel(key)}</h3></header><AnalysisValue value={value} fieldKey={key} /></section>)}</div> : <p className="muted">No structured analysis details were returned.</p>}</div></details>;
 }
-function AnalysisValue({ value }) { if (Array.isArray(value)) return <ul>{value.map((item, i) => <li key={i}>{typeof item === 'object' ? <AnalysisValue value={item} /> : String(item)}</li>)}</ul>; if (value && typeof value === 'object') return <dl>{Object.entries(value).map(([k, v]) => <React.Fragment key={k}><dt>{k.replaceAll('_', ' ')}</dt><dd><AnalysisValue value={v} /></dd></React.Fragment>)}</dl>; return <p>{String(value)}</p>; }
+
+function analysisLabel(value) {
+  return String(value).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replaceAll('_', ' ').replace(/\b(cpc|npl|uspto|idf|api|url)\b/gi, word => word.toUpperCase()).replace(/\s+/g, ' ').trim();
+}
+
+const featureCollections = {
+  structural_features: { heading: 'Structural features', title: 'Feature', description: 'feature' },
+  procedural_features: { heading: 'Procedural features', title: 'Step', description: 'step' },
+  functional_features: { heading: 'Functional features', title: 'Function', description: 'function' },
+};
+
+const keywordCollections = new Set(['structural_keywords', 'procedural_keywords', 'functional_keywords']);
+
+function FeatureCollection({ rows, fieldKey }) {
+  const config = featureCollections[fieldKey];
+  return <div className="analysis-feature-list">{rows.map((item, index) => <article className="analysis-feature" key={item?.feature_id || index}>
+    <div className="analysis-feature-primary"><div className="analysis-feature-id"><span>Feature ID</span><b>{item?.feature_id || '—'}</b></div><div className="analysis-feature-description"><h5>{config.title}</h5><AnalysisValue value={item?.[config.description]} /></div></div>
+    <div className="analysis-feature-details"><h5>Technical details</h5><AnalysisValue value={item?.details} /></div>
+  </article>)}</div>;
+}
+
+function InventionAnalysis({ value }) {
+  return <div className="analysis-invention">
+    {value.invention_summary && <section className="analysis-invention-summary"><h4>Invention summary</h4><AnalysisValue value={value.invention_summary} /></section>}
+    {Object.entries(featureCollections).map(([key, config]) => Array.isArray(value[key]) && <section className="analysis-invention-group" key={key}><h4>{config.heading}</h4>{value[key].length ? <FeatureCollection rows={value[key]} fieldKey={key} /> : <span className="analysis-empty-value">No features provided</span>}</section>)}
+  </div>;
+}
+
+function KeywordTerms({ value }) {
+  const terms = Array.isArray(value) ? value : [value];
+  return <div className="analysis-keyword-tags">{terms.map((term, index) => <span className="analysis-keyword-tag" key={`${term}-${index}`}>{String(term)}</span>)}</div>;
+}
+
+function KeywordTable({ rows }) {
+  return <div className="analysis-keyword-table-wrap"><table className="analysis-keyword-table"><thead><tr><th>Feature ID</th><th>Feature</th><th>Primary keywords</th><th>Synonyms</th><th>Alternative terms</th></tr></thead><tbody>{rows.map((row, index) => <tr key={row?.feature_id || index}><td className="keyword-feature-id">{row?.feature_id || '—'}</td><td>{row?.feature || '—'}</td><td><KeywordTerms value={row?.primary_keywords || []} /></td><td><KeywordTerms value={row?.synonyms || []} /></td><td><KeywordTerms value={row?.alternative_terms || []} /></td></tr>)}</tbody></table></div>;
+}
+
+function KeywordAnalysisView({ value }) {
+  const groups = Object.entries(value).filter(([key, rows]) => keywordCollections.has(key) && Array.isArray(rows));
+  const consolidated = value.consolidated_keywords;
+  return <div className="analysis-keyword-analysis">
+    {groups.map(([key, rows]) => <section className="analysis-keyword-group" key={key}><h4>{analysisLabel(key)}</h4>{rows.length ? <KeywordTable rows={rows} /> : <span className="analysis-empty-value">No keywords available</span>}</section>)}
+    {Array.isArray(consolidated) && <section className="analysis-keyword-group"><h4>Consolidated keywords</h4>{consolidated.length ? <KeywordTerms value={consolidated} /> : <span className="analysis-empty-value">No keywords available</span>}</section>}
+  </div>;
+}
+
+function CpcCandidatesTable({ candidates }) {
+  return <div className="analysis-cpc-table-wrap"><table className="analysis-cpc-table"><thead><tr><th>CPC code</th><th>Title</th><th>Relevance</th></tr></thead><tbody>{candidates.map((candidate, index) => <React.Fragment key={candidate?.cpc_code || index}><tr className="analysis-cpc-candidate"><td className="analysis-cpc-code">{candidate?.cpc_code || '—'}</td><td>{candidate?.title || '—'}</td><td>{candidate?.relevance || '—'}</td></tr><tr className="analysis-cpc-reason"><td colSpan={3}><span>Reason</span>{candidate?.reason || '—'}</td></tr></React.Fragment>)}</tbody></table></div>;
+}
+
+function CpcAnalysisView({ value }) {
+  const candidates = Array.isArray(value.candidates) ? value.candidates : [];
+  return <div className="analysis-cpc-analysis"><h4>Candidates</h4>{candidates.length ? <CpcCandidatesTable candidates={candidates} /> : <span className="analysis-empty-value">No CPC candidates available</span>}</div>;
+}
+
+function SearchQueriesTable({ queries }) {
+  return <div className="analysis-query-table-wrap"><table className="analysis-query-table"><thead><tr><th>Query name</th><th>Search query</th><th>Priority</th></tr></thead><tbody>{queries.map((query, index) => <React.Fragment key={query?.query_name || index}><tr className="analysis-query-row"><td className="analysis-query-name">{query?.query_name || '—'}</td><td><code>{query?.query || '—'}</code></td><td><span className={`analysis-priority ${String(query?.priority || '').toLowerCase()}`}>{query?.priority || '—'}</span></td></tr><tr className="analysis-query-purpose"><td colSpan={3}><span>Purpose</span>{query?.purpose || '—'}</td></tr></React.Fragment>)}</tbody></table></div>;
+}
+
+function SearchQueryAnalysisView({ value }) {
+  const queries = Array.isArray(value.queries) ? value.queries : [];
+  return <div className="analysis-query-analysis"><h4>Search queries</h4>{queries.length ? <SearchQueriesTable queries={queries} /> : <span className="analysis-empty-value">No search queries available</span>}</div>;
+}
+
+function FeatureMappingTable({ ids, texts }) {
+  const rowCount = Math.max(ids.length, texts.length);
+  return <div className="analysis-feature-mapping-wrap"><table className="analysis-feature-mapping"><thead><tr><th>Feature ID</th><th>Feature text</th></tr></thead><tbody>{Array.from({ length: rowCount }, (_, index) => <tr key={`${ids[index] || 'feature'}-${index}`}><td className="analysis-cpc-code">{ids[index] || '—'}</td><td>{texts[index] || '—'}</td></tr>)}</tbody></table></div>;
+}
+
+function AnalysisValue({ value, fieldKey }) {
+  if (value === null || value === undefined || value === '') return <span className="analysis-empty-value">—</span>;
+  if (Array.isArray(value)) {
+    if (!value.length) return <span className="analysis-empty-value">No items</span>;
+    if (fieldKey === 'searched_feature_ids' || fieldKey === 'authors') return <KeywordTerms value={value} />;
+    if (keywordCollections.has(fieldKey) && value.some(item => item && typeof item === 'object')) return <KeywordTable rows={value} />;
+    if (fieldKey === 'consolidated_keywords' && value.every(item => typeof item === 'string')) return <KeywordTerms value={value} />;
+    if (featureCollections[fieldKey]) {
+      return <FeatureCollection rows={value} fieldKey={fieldKey} />;
+    }
+    return <ul className="analysis-list">{value.map((item, index) => <li className={item && typeof item === 'object' ? 'analysis-list-object' : ''} key={index}><AnalysisValue value={item} /></li>)}</ul>;
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value).filter(([, item]) => item !== null && item !== undefined && item !== '');
+    if (!entries.length) return <span className="analysis-empty-value">No details</span>;
+    if (Array.isArray(value.feature_ids) && Array.isArray(value.feature_texts)) {
+      const remaining = entries.filter(([key]) => key !== 'feature_ids' && key !== 'feature_texts');
+      return <div className="analysis-feature-mapping-block"><FeatureMappingTable ids={value.feature_ids} texts={value.feature_texts} />{remaining.length > 0 && <dl className="analysis-fields">{remaining.map(([key, item]) => <div className="analysis-field" key={key}><dt>{analysisLabel(key)}</dt><dd><AnalysisValue value={item} fieldKey={key} /></dd></div>)}</dl>}</div>;
+    }
+    if (Array.isArray(value.queries) && value.queries.some(query => query && typeof query === 'object' && 'query' in query)) return <SearchQueryAnalysisView value={value} />;
+    if (Array.isArray(value.candidates) && value.candidates.some(candidate => candidate && typeof candidate === 'object' && 'cpc_code' in candidate)) return <CpcAnalysisView value={value} />;
+    if (Object.entries(value).some(([key, item]) => keywordCollections.has(key) && Array.isArray(item)) || Array.isArray(value.consolidated_keywords)) return <KeywordAnalysisView value={value} />;
+    if (Object.hasOwn(value, 'invention_summary') && Object.keys(featureCollections).some(key => Array.isArray(value[key]))) return <InventionAnalysis value={value} />;
+    return <dl className="analysis-fields">{entries.map(([key, item]) => <div className="analysis-field" key={key}><dt>{analysisLabel(key)}</dt><dd><AnalysisValue value={item} fieldKey={key} /></dd></div>)}</dl>;
+  }
+  if (typeof value === 'boolean') return <span className={`analysis-bool ${value ? 'is-true' : 'is-false'}`}>{value ? 'Yes' : 'No'}</span>;
+  return <p className="analysis-text">{String(value)}</p>;
+}
 
 function Help() { return <div className="content narrow"><PageTitle eyebrow="SUPPORT" title="Help" description="A quick guide to managing invention disclosures." /><div className="card help-card"><h2>Getting started</h2><ol><li>Select a customer or add one to your organization.</li><li>Create an invention with a title and UTF-8 text IDF file.</li><li>Open the invention to review analysis versions and download reports.</li><li>Upload a revised IDF from the invention page to create another version.</li></ol><h2>File format</h2><p>Version 1 accepts IDF documents as UTF-8 encoded <code>.txt</code> files, up to 10 MB.</p><h2>Need access?</h2><p>Accounts are provisioned by your organization administrator. Contact them if you need an account or your organization assignment changes.</p></div></div>; }
 
