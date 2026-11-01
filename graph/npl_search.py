@@ -1,12 +1,14 @@
-"""Asynchronous three-source NPL discovery and LLM relevance ranking.
+"""Asynchronous multi-source NPL discovery and LLM relevance ranking.
 
-Providers: Semantic Scholar, OpenAlex, and arXiv.
+Providers: Semantic Scholar, OpenAlex, arXiv, and OpenAIRE; optional SerpApi Google Scholar.
 Requires: httpx (pip install httpx).
 Designed as an async LangGraph node. No full-text downloads are performed.
 """
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import html
 import json
 import os
@@ -25,8 +27,13 @@ FEATURE_LIMIT = 8
 RESULTS_PER_QUERY = 20
 RERANK_CANDIDATE_LIMIT = 50
 RERANK_BATCH_SIZE = 10
+MAX_RETURNED_RESULTS = 100
+ABSTRACT_DISPLAY_LIMIT = 3000
+TLDR_DISPLAY_LIMIT = 1000
 HTTP_TIMEOUT_SECONDS = 20.0
 SEMANTIC_SCHOLAR_MAX_RETRIES = 4
+PROVIDER_MAX_RETRIES = 3
+RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
 USER_AGENT = "PatentAgentNPL/2.0 (scholarly discovery)"
 
 CATEGORIES = (
@@ -97,7 +104,12 @@ def _fallback_query_plan(features: dict[str, list[dict[str, str]]]) -> list[dict
         plan.append({
             "category": category,
             "feature_ids": [x["feature_id"] for x in items if x["feature_id"]],
-            "feature_texts": texts,
+            # Keep feature IDs paired with their text for display/audit; do not
+            # maintain parallel lists that can become misaligned.
+            "features": [
+                {"feature_id": x["feature_id"], "text": _compact(x["text"], 1000)}
+                for x in items
+            ],
             "semantic_scholar_query": semantic_query,
             "openalex_concept_query": concept_query or semantic_query,
             "arxiv_boolean_query": arxiv_query or "all:" + json.dumps(semantic_query[:150]),
@@ -209,9 +221,51 @@ def _normalize_record(*, title: str, authors: list[str], date: str | None, abstr
     }
 
 
+def _retry_delay(attempt: int, response: httpx.Response | None = None) -> float:
+    retry_after = response.headers.get("Retry-After", "").strip() if response is not None else ""
+    if retry_after:
+        try:
+            delay = float(retry_after)
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                delay = (retry_at - datetime.now(timezone.utc)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                delay = min(1.0 * (2 ** attempt), 30.0)
+    else:
+        delay = min(1.0 * (2 ** attempt), 30.0)
+    return max(0.5, min(delay, 60.0))
+
+
+async def _get_with_retries(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict[str, Any],
+    headers: dict[str, str] | None = None,
+    max_retries: int = PROVIDER_MAX_RETRIES,
+) -> httpx.Response:
+    for attempt in range(max_retries + 1):
+        try:
+            response = await client.get(url, params=params, headers=headers)
+        except httpx.TransportError:
+            if attempt >= max_retries:
+                raise
+            await asyncio.sleep(_retry_delay(attempt))
+            continue
+        if response.status_code in RETRYABLE_HTTP_STATUSES:
+            if attempt >= max_retries:
+                response.raise_for_status()
+            await asyncio.sleep(_retry_delay(attempt, response))
+            continue
+        response.raise_for_status()
+        return response
+    raise RuntimeError("Provider request retries exhausted")
+
+
 async def _get_json(client: httpx.AsyncClient, url: str, params: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
-    response = await client.get(url, params=params, headers=headers)
-    response.raise_for_status()
+    response = await _get_with_retries(client, url, params, headers)
     return response.json()
 
 
@@ -222,7 +276,7 @@ async def _semantic_scholar_get_json(
     request_lock: asyncio.Lock,
     rate_state: dict[str, float],
 ) -> dict[str, Any]:
-    """Serialize Semantic Scholar requests and retry transient 429 responses."""
+    """Serialize Semantic Scholar requests and retry transient failures."""
     api_key_present = bool(os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip())
     # Conservative spacing: API-key requests around 1 request/sec; without a key,
     # slow down further because unauthenticated traffic shares a public pool.
@@ -231,25 +285,23 @@ async def _semantic_scholar_get_json(
     url = "https://api.semanticscholar.org/graph/v1/paper/search"
 
     for attempt in range(SEMANTIC_SCHOLAR_MAX_RETRIES + 1):
-        async with request_lock:
-            elapsed = time.monotonic() - rate_state.get("last_request_at", 0.0)
-            if elapsed < min_interval:
-                await asyncio.sleep(min_interval - elapsed)
-            response = await client.get(url, params=params, headers=headers)
-            rate_state["last_request_at"] = time.monotonic()
+        try:
+            async with request_lock:
+                elapsed = time.monotonic() - rate_state.get("last_request_at", 0.0)
+                if elapsed < min_interval:
+                    await asyncio.sleep(min_interval - elapsed)
+                response = await client.get(url, params=params, headers=headers)
+                rate_state["last_request_at"] = time.monotonic()
+        except httpx.TransportError:
+            if attempt >= SEMANTIC_SCHOLAR_MAX_RETRIES:
+                raise
+            await asyncio.sleep(_retry_delay(attempt))
+            continue
 
-        if response.status_code == 429:
+        if response.status_code in RETRYABLE_HTTP_STATUSES:
             if attempt >= SEMANTIC_SCHOLAR_MAX_RETRIES:
                 response.raise_for_status()
-            retry_after = response.headers.get("Retry-After", "").strip()
-            try:
-                wait_seconds = float(retry_after)
-            except (TypeError, ValueError):
-                wait_seconds = min(5.0 * (2 ** attempt), 60.0)
-            # Avoid a tight retry loop, and cap server-provided delays to a practical
-            # maximum per attempt. A later retry may still be rate-limited.
-            wait_seconds = max(1.0, min(wait_seconds, 120.0))
-            await asyncio.sleep(wait_seconds)
+            await asyncio.sleep(_retry_delay(attempt, response))
             continue
 
         response.raise_for_status()
@@ -351,19 +403,119 @@ async def _search_openalex(client: httpx.AsyncClient, item: dict[str, Any]) -> d
         return _error_outcome(provider, category, started, exc)
 
 
+async def _search_openaire(client: httpx.AsyncClient, item: dict[str, Any]) -> dict[str, Any]:
+    """Search OpenAIRE's stable Graph API and map its metadata to NPL records."""
+    started = time.monotonic()
+    provider, category = "OpenAIRE", item["category"]
+    try:
+        payload = await _get_json(client, "https://api.openaire.eu/graph/v3/research-products", {
+            "search": item["semantic_scholar_query"],
+            "type": "publication",
+            "page": 1,
+            "pageSize": RESULTS_PER_QUERY,
+        })
+        results = []
+        for product in payload.get("results", []):
+            pids = product.get("pids") or []
+            doi = next((pid.get("value") for pid in pids
+                        if str(pid.get("scheme", "")).lower() == "doi" and pid.get("value")), None)
+            authors = [author.get("fullName", "") if isinstance(author, dict) else str(author)
+                       for author in product.get("authors", [])]
+            descriptions = product.get("descriptions") or []
+            if isinstance(descriptions, str):
+                descriptions = [descriptions]
+            abstract_text = " ".join(str(description) for description in descriptions if description)
+            abstract_text = html.unescape(abstract_text)
+            abstract_text = re.sub(r"<[^>]+>", " ", abstract_text)
+            abstract_text = re.sub(r"\s+", " ", abstract_text).strip() or None
+
+            container = product.get("container") or {}
+            venue = container if isinstance(container, str) else container.get("name")
+            url = None
+            for instance in product.get("instances") or []:
+                urls = instance.get("urls") or []
+                if isinstance(urls, str):
+                    urls = [urls]
+                url = next((entry.get("url") if isinstance(entry, dict) else entry
+                            for entry in urls if entry), None)
+                if url:
+                    break
+
+            normalized = _normalize_record(
+                title=product.get("mainTitle", ""), authors=authors,
+                date=product.get("publicationDate"), abstract=abstract_text,
+                doi=doi, url=url, provider=provider, record_id=product.get("id"),
+                category=category, feature_ids=item["feature_ids"], venue=venue,
+                document_type=product.get("type"),
+            )
+            if normalized:
+                results.append(normalized)
+        return _outcome(provider, category, results, started)
+    except Exception as exc:
+        return _error_outcome(provider, category, started, exc)
+
+
+async def _search_google_scholar_serpapi(client: httpx.AsyncClient, item: dict[str, Any]) -> dict[str, Any]:
+    """Optionally search Google Scholar through SerpApi for internal evaluation."""
+    started = time.monotonic()
+    provider, category = "Google Scholar (SerpApi)", item["category"]
+    api_key = os.getenv("SERPAPI_API_KEY", "").strip()
+    try:
+        payload = await _get_json(client, "https://serpapi.com/search.json", {
+            "engine": "google_scholar",
+            "q": item["semantic_scholar_query"],
+            "num": RESULTS_PER_QUERY,
+            "api_key": api_key,
+        })
+        results = []
+        for paper in payload.get("organic_results", []):
+            publication_info = paper.get("publication_info") or {}
+            author_items = publication_info.get("authors") or []
+            authors = [author.get("name", "") if isinstance(author, dict) else str(author)
+                       for author in author_items]
+            publication_summary = publication_info.get("summary") or ""
+            year_match = re.search(r"\b(?:19|20)\d{2}\b", publication_summary)
+            link = paper.get("link")
+            doi_text = " ".join(str(value or "") for value in (link, paper.get("snippet")))
+            doi_match = re.search(r"10\.\d{4,9}/[^\s\"<>]+", doi_text, flags=re.I)
+            normalized = _normalize_record(
+                title=paper.get("title", ""), authors=authors,
+                date=year_match.group(0) if year_match else None,
+                abstract=paper.get("snippet"), doi=doi_match.group(0) if doi_match else None,
+                url=link, provider=provider,
+                record_id=paper.get("result_id") or paper.get("cluster_id"),
+                category=category, feature_ids=item["feature_ids"],
+                venue=publication_summary or None, document_type="scholarly article",
+            )
+            if normalized:
+                resources = paper.get("resources") or []
+                normalized["open_access_url"] = next(
+                    (resource.get("link") for resource in resources
+                     if isinstance(resource, dict) and resource.get("link")), None,
+                )
+                results.append(normalized)
+        return _outcome(provider, category, results, started)
+    except Exception as exc:
+        # The API key is sent as a query parameter; never let request URLs
+        # containing it escape into the provider-call summary or audit log.
+        outcome = _error_outcome(provider, category, started, exc)
+        if api_key:
+            outcome["error"] = outcome["error"].replace(api_key, "[REDACTED]")
+        return outcome
+
+
 async def _search_arxiv(client: httpx.AsyncClient, item: dict[str, Any]) -> dict[str, Any]:
     started = time.monotonic()
     provider, category = "arXiv", item["category"]
     try:
         # arXiv returns Atom XML, so parse the feed rather than expecting JSON.
-        payload = await client.get("https://export.arxiv.org/api/query", params={
+        payload = await _get_with_retries(client, "https://export.arxiv.org/api/query", params={
             "search_query": item["arxiv_boolean_query"],
             "start": 0,
             "max_results": RESULTS_PER_QUERY,
             "sortBy": "relevance",
             "sortOrder": "descending",
         })
-        payload.raise_for_status()
         root = ET.fromstring(payload.text)
         ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
         results = []
@@ -470,13 +622,19 @@ def _llm_content(response: Any) -> str:
 
 
 async def _rerank_with_llm(context: Any, records: list[dict[str, Any]], feature_matrix: dict[str, list[dict[str, str]]]) -> tuple[list[dict[str, Any]], str]:
+    if not records:
+        return records, "not_applicable_no_candidates"
     llm = getattr(context, "llm", None) if context is not None else None
     if llm is None or not hasattr(llm, "ainvoke"):
         for record in records:
-            record["relevance_score"] = round(record.get("pre_rank_score", 0.0), 2)
+            # The lexical score is not calibrated to the LLM's 0–100 scale.
+            record["relevance_score"] = None
             record["relevance_ranking_method"] = "lexical_fallback_llm_unavailable"
-        records.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
-        return records, "llm_unavailable_lexical_fallback"
+        records.sort(key=lambda x: x.get("pre_rank_score", 0), reverse=True)
+        for rank, record in enumerate(records, start=1):
+            record["preliminary_rank"] = rank
+            record["relevance_rank"] = None
+        return records, "lexical_fallback_llm_unavailable"
 
     feature_payload = {
         category: [{"feature_id": f.get("feature_id"), "feature": f.get("text")} for f in items]
@@ -525,29 +683,59 @@ Candidates:
                 record["relevance_ranking_method"] = "llm_feature_matrix"
         except Exception as exc:
             print(f"NPL LLM rerank batch failed: {exc}")
-            for record in batch:
-                if "relevance_score" not in record:
-                    record["relevance_score"] = round(record.get("pre_rank_score", 0.0), 2)
-                    record["matched_feature_ids"] = []
-                    record["relevance_rationale"] = "LLM evaluation unavailable; showing preliminary lexical score."
-                    record["evidence_phrases"] = []
-                    record["relevance_ranking_method"] = "lexical_fallback_batch_error"
+        for record in batch:
+            if "relevance_ranking_method" not in record:
+                record["relevance_score"] = None
+                record["matched_feature_ids"] = []
+                record["relevance_rationale"] = "LLM evaluation unavailable; only the preliminary lexical score is available."
+                record["evidence_phrases"] = []
+                record["relevance_ranking_method"] = "lexical_fallback_batch_error"
 
-    records.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
-    for rank, record in enumerate(records, start=1):
-        record["relevance_rank"] = rank
-    return records, "llm_feature_matrix"
+    records.sort(key=lambda record: (
+        record.get("relevance_ranking_method") != "llm_feature_matrix",
+        -(record.get("relevance_score") or 0.0)
+        if record.get("relevance_ranking_method") == "llm_feature_matrix"
+        else -(record.get("pre_rank_score") or 0.0),
+    ))
+    llm_rank = 0
+    preliminary_rank = 0
+    for record in records:
+        if record.get("relevance_ranking_method") == "llm_feature_matrix":
+            llm_rank += 1
+            record["relevance_rank"] = llm_rank
+            record["preliminary_rank"] = None
+        else:
+            preliminary_rank += 1
+            record["relevance_rank"] = None
+            record["preliminary_rank"] = preliminary_rank
+
+    methods = {record.get("relevance_ranking_method") for record in records}
+    if methods == {"llm_feature_matrix"}:
+        ranking_method = "llm_feature_matrix"
+    elif methods == {"lexical_fallback_batch_error"}:
+        ranking_method = "lexical_fallback_batch_error"
+    elif not methods:
+        ranking_method = "not_applicable_no_candidates"
+    else:
+        ranking_method = "mixed_llm_and_lexical_fallback"
+    return records, ranking_method
 
 
 async def _search_npl_three_sources_async(state: PatentState, config: RunnableConfig) -> dict[str, Any]:
-    """Search Semantic Scholar, OpenAlex and arXiv concurrently, deduplicate and rerank."""
+    """Search scholarly sources concurrently, deduplicate and rerank their results."""
     invention = state.get("invention")
     if invention is None:
         raise ValueError("InventionRepresentation is missing from state. Run decompose_invention first.")
 
     feature_matrix = _features_by_category(invention)
     if not any(feature_matrix.values()):
-        summary = {"status": "no_features", "raw_result_count": 0, "deduplicated_count": 0, "provider_calls": []}
+        summary = {
+            "status": "no_features", "raw_result_count": 0, "deduplicated_count": 0,
+            "returned_result_count": 0, "results_limit": MAX_RETURNED_RESULTS,
+            "results_truncated": False, "omitted_result_count": 0,
+            "abstract_limit_chars": ABSTRACT_DISPLAY_LIMIT, "tldr_limit_chars": TLDR_DISPLAY_LIMIT,
+            "provider_calls": [],
+        }
         return {"npl_queries": [], "npl_results": [], "npl_search_summary": summary}
 
     configurable = (config or {}).get("configurable", {})
@@ -559,15 +747,20 @@ async def _search_npl_three_sources_async(state: PatentState, config: RunnableCo
     async with httpx.AsyncClient(timeout=timeout, limits=limits, headers=headers, follow_redirects=True) as client:
         tasks = []
         # Share one lock/rate clock across every Semantic Scholar query in this run.
-        # OpenAlex and arXiv remain concurrent with each other and with S2 waits.
+        # Other provider calls remain concurrent with each other and with S2 waits.
         semantic_scholar_lock = asyncio.Lock()
         semantic_scholar_rate_state: dict[str, float] = {"last_request_at": 0.0}
         for item in plan:
             tasks.extend([
                 _search_semantic_scholar(client, item, semantic_scholar_lock, semantic_scholar_rate_state),
                 _search_openalex(client, item),
+                _search_openaire(client, item),
                 _search_arxiv(client, item),
             ])
+            serpapi_enabled = os.getenv("ENABLE_SERPAPI_GOOGLE_SCHOLAR", "").strip().lower() in {"1", "true", "yes"}
+            serpapi_key = os.getenv("SERPAPI_API_KEY", "").strip()
+            if serpapi_enabled and serpapi_key:
+                tasks.append(_search_google_scholar_serpapi(client, item))
         # All provider/category requests are launched together; failures are isolated per source.
         outcomes = await asyncio.gather(*tasks, return_exceptions=False)
 
@@ -580,24 +773,51 @@ async def _search_npl_three_sources_async(state: PatentState, config: RunnableCo
     ranked, ranking_method = await _rerank_with_llm(context, shortlist, feature_matrix)
     ranked_ids = {id(record) for record in ranked}
     # Keep remaining deduplicated results available for audit/review, but mark them as not LLM-ranked.
-    unranked = [record for record in deduplicated if id(record) not in ranked_ids]
+    unranked = sorted(
+        (record for record in deduplicated if id(record) not in ranked_ids),
+        key=lambda record: record.get("pre_rank_score", 0), reverse=True,
+    )
     for record in unranked:
         record["relevance_score"] = None
         record["relevance_rank"] = None
         record["relevance_ranking_method"] = "not_in_top_50_candidates"
     final_results = ranked + unranked
+    returned_results = final_results[:MAX_RETURNED_RESULTS]
+    # Keep full provider text available through ranking, then trim the payload
+    # returned to the portal so the UI/database response stays bounded.
+    for record in returned_results:
+        if record.get("abstract"):
+            record["abstract"] = record["abstract"][:ABSTRACT_DISPLAY_LIMIT]
+        if record.get("tldr"):
+            record["tldr"] = record["tldr"][:TLDR_DISPLAY_LIMIT]
 
     provider_calls = [{k: outcome[k] for k in ("provider", "category", "count", "elapsed_seconds", "error")} for outcome in outcomes]
+    provider_error_count = sum(1 for call in provider_calls if call["error"])
+    if provider_error_count and raw_results:
+        status = "partial_success"
+    elif provider_error_count:
+        status = "provider_error"
+    elif raw_results:
+        status = "success"
+    else:
+        status = "no_results"
     summary = {
-        "status": "success" if raw_results else ("provider_error" if any(x["error"] for x in provider_calls) else "no_results"),
+        "status": status,
         "query_count": len(plan),
         "provider_request_count": len(outcomes),
+        "provider_error_count": provider_error_count,
         "raw_result_count": len(raw_results),
         "deduplicated_count": len(deduplicated),
         "duplicates_removed": len(raw_results) - len(deduplicated),
         "llm_rerank_candidate_count": len(shortlist),
         "llm_rerank_count": sum(1 for x in ranked if x.get("relevance_ranking_method") == "llm_feature_matrix"),
         "ranking_method": ranking_method,
+        "returned_result_count": len(returned_results),
+        "results_limit": MAX_RETURNED_RESULTS,
+        "results_truncated": len(final_results) > len(returned_results),
+        "omitted_result_count": len(final_results) - len(returned_results),
+        "abstract_limit_chars": ABSTRACT_DISPLAY_LIMIT,
+        "tldr_limit_chars": TLDR_DISPLAY_LIMIT,
         "provider_calls": sorted(provider_calls, key=lambda x: (x["provider"], x["category"])),
     }
 
@@ -606,7 +826,7 @@ async def _search_npl_three_sources_async(state: PatentState, config: RunnableCo
         try:
             audit_result = audit.log_model_call(
                 configurable.get("thread_id"), "search_npl_three_sources",
-                f"Concurrent Semantic Scholar/OpenAlex/arXiv searches across {len(plan)} feature categories", summary,
+                f"Concurrent Semantic Scholar/OpenAlex/OpenAIRE/arXiv searches across {len(plan)} feature categories", summary,
             )
             if hasattr(audit_result, "__await__"):
                 await audit_result
@@ -614,8 +834,8 @@ async def _search_npl_three_sources_async(state: PatentState, config: RunnableCo
             # Audit failure should not discard search results.
             pass
 
-    print(f"NPL search complete: {len(raw_results)} raw, {len(deduplicated)} unique, {len(shortlist)} rerank candidates.")
-    return {"npl_queries": plan, "npl_results": final_results, "npl_search_summary": summary}
+    print(f"NPL search complete: {len(raw_results)} raw, {len(deduplicated)} unique, {len(shortlist)} rerank candidates, {len(returned_results)} returned.")
+    return {"npl_queries": plan, "npl_results": returned_results, "npl_search_summary": summary}
 
 def search_npl_three_sources(state: PatentState, config: RunnableConfig) -> dict[str, Any]:
     """Synchronous LangGraph adapter for applications using graph.stream()/invoke().
