@@ -145,6 +145,18 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() in {"1", "true", "yes"}
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Patent Portal <noreply@example.com>")
 
+try:
+    from . import local_auth as _local_auth
+except ModuleNotFoundError as exc:
+    if exc.name != f"{__package__}.local_auth":
+        raise
+    _local_auth = None
+
+GOOGLE_OAUTH_CLIENT_ID = getattr(_local_auth, "GOOGLE_OAUTH_CLIENT_ID", os.getenv("GOOGLE_OAUTH_CLIENT_ID", ""))
+GOOGLE_OAUTH_CLIENT_SECRET = getattr(_local_auth, "GOOGLE_OAUTH_CLIENT_SECRET", os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", ""))
+GOOGLE_OAUTH_REDIRECT_URI = getattr(_local_auth, "GOOGLE_OAUTH_REDIRECT_URI", os.getenv("GOOGLE_OAUTH_REDIRECT_URI", ""))
+PORTAL_FRONTEND_URL = getattr(_local_auth, "PORTAL_FRONTEND_URL", os.getenv("PORTAL_FRONTEND_URL", "http://127.0.0.1:5173"))
+
 LOGIN_URL = "/admin/login/"
 
 # Keep analysis failures visible in the Django terminal during development and

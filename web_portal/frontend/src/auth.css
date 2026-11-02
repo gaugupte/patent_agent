@@ -1,0 +1,8 @@
+.auth-card > .button { margin-top: 8px; }
+.auth-divider { display: flex; align-items: center; gap: 12px; margin: 17px 0; color: #9aa5b3; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+.auth-divider::before, .auth-divider::after { content: ""; height: 1px; flex: 1; background: #e9edf2; }
+.auth-card .auth-divider + .form { margin-top: 0; }
+.auth-link-button { justify-self: center; border: 0; padding: 2px; background: none; color: #356bea; font-size: 11px; font-weight: 600; cursor: pointer; }
+.password-login summary { color: #53647b; text-align: center; font-size: 11px; font-weight: 600; cursor: pointer; }
+.password-login[open] summary { margin-bottom: 14px; }
+.password-login .form { margin-top: 0; }

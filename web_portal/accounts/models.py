@@ -43,3 +43,31 @@ class PortalUser(AbstractUser):
 
     def __str__(self) -> str:
         return self.username
+
+
+class ExternalIdentity(models.Model):
+    """A verified external login identity, keyed by provider issuer and subject."""
+
+    user = models.ForeignKey(PortalUser, on_delete=models.CASCADE, related_name="external_identities")
+    issuer = models.CharField(max_length=255)
+    subject = models.CharField(max_length=255)
+    email = models.EmailField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=("issuer", "subject"), name="unique_external_identity")]
+
+
+class EmailLoginCode(models.Model):
+    """Short-lived, single-use email verification/login challenge."""
+
+    email = models.EmailField(db_index=True)
+    code_hash = models.CharField(max_length=128)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    request_ip = models.GenericIPAddressField(null=True, blank=True)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=("email", "created_at"), name="accounts_em_email_1e2b18_idx")]

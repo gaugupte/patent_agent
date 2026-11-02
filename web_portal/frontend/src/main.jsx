@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { api, downloadReport } from './api';
 import './styles.css';
+import './auth.css';
 
 const Auth = createContext(null);
 const useAuth = () => useContext(Auth); // #this is function definition
@@ -53,9 +54,20 @@ function Empty({ title, body, action }) { return <div className="empty"><div cla
 function Login() {
   const { user, setUser } = useAuth(); const navigate = useNavigate(); const location = useLocation();
   const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  const [email, setEmail] = useState(''); const [code, setCode] = useState(''); const [codeSent, setCodeSent] = useState(false);
   if (user) return <Navigate to="/inventions" replace />;
   const submit = async (event) => { event.preventDefault(); setBusy(true); setError(''); try { setUser(await api('/auth/login/', { method: 'POST', body: JSON.stringify({ username, password }) })); navigate(location.state?.from || '/inventions', { replace: true }); } catch (e) { setError(message(e)); } finally { setBusy(false); } };
-  return <AuthFrame><div className="auth-card"><div className="auth-icon">P</div><div className="eyebrow">WELCOME BACK</div><h1>Sign in to your workspace</h1><p className="muted">Use the account provided by your organization administrator.</p><Notice error={error} /><form onSubmit={submit} className="form"><label>Username<input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required autoFocus /></label><label>Password<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label><button className="button primary full" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'} <span>→</span></button></form><Link className="auth-link" to="/forgot-password">Forgot password?</Link></div><div className="auth-foot">PatentDesk · Private organization portal</div></AuthFrame>;
+  const emailCodeSubmit = async event => { event.preventDefault(); setBusy(true); setError(''); try { await api('/auth/email-code/request/', { method: 'POST', body: JSON.stringify({ email }) }); setCodeSent(true); } catch (e) { setError(message(e)); } finally { setBusy(false); } };
+  const verifyEmailCode = async event => { event.preventDefault(); setBusy(true); setError(''); try { setUser(await api('/auth/email-code/verify/', { method: 'POST', body: JSON.stringify({ email, code }) })); navigate('/inventions', { replace: true }); } catch (e) { setError(message(e)); } finally { setBusy(false); } };
+  const authError = new URLSearchParams(location.search).get('auth_error');
+  const providerError = authError === 'google_not_configured' ? 'Google sign-in has not been configured yet.' : authError === 'account_conflict' ? 'More than one portal account uses this email. Contact your administrator.' : authError === 'account_inactive' ? 'This portal account is inactive or not assigned to an active organization. Contact your administrator.' : authError ? 'Google sign-in could not be completed. Please try again.' : '';
+  return <AuthFrame><div className="auth-card"><div className="auth-icon">P</div><div className="eyebrow">WELCOME</div><h1>Sign in to PatentDesk</h1><p className="muted">Use Google, an email verification code, or your organization account.</p><Notice error={error || providerError} />
+    <a className="button secondary full" href="/api/auth/google/login/">Continue with Google</a>
+    <div className="auth-divider"><span>OR</span></div>
+    {codeSent ? <form onSubmit={verifyEmailCode} className="form"><p className="muted">Enter the 6-digit code sent to <b>{email}</b>.</p><label>Verification code<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={e => setCode(e.target.value)} required /></label><button className="button primary full" disabled={busy}>{busy ? 'Verifying…' : 'Verify email and continue'}</button><button type="button" className="auth-link-button" onClick={() => { setCodeSent(false); setCode(''); }}>Use a different email</button></form> : <form onSubmit={emailCodeSubmit} className="form"><label>Email address<input type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required /></label><button className="button secondary full" disabled={busy}>{busy ? 'Sending code…' : 'Continue with email code'}</button></form>}
+    <div className="auth-divider"><span>OR</span></div>
+    <details className="password-login"><summary>Sign in with organization username and password</summary><form onSubmit={submit} className="form"><label>Username<input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required /></label><label>Password<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label><button className="button primary full" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button></form><Link className="auth-link" to="/forgot-password">Forgot password?</Link></details>
+    </div><div className="auth-foot">PatentDesk · Private organization portal</div></AuthFrame>;
 }
 
 function AuthFrame({ children }) { return <div className="auth-page"><div className="auth-brand"><span className="brand-mark">P</span> Patent<span className="brand-light">Desk</span></div>{children}</div>; }
@@ -204,9 +216,9 @@ function SearchQueryAnalysisView({ value }) {
   return <div className="analysis-query-analysis"><h4>Search queries</h4>{queries.length ? <SearchQueriesTable queries={queries} /> : <span className="analysis-empty-value">No search queries available</span>}</div>;
 }
 
-function FeatureMappingTable({ ids, texts }) {
-  const rowCount = Math.max(ids.length, texts.length);
-  return <div className="analysis-feature-mapping-wrap"><table className="analysis-feature-mapping"><thead><tr><th>Feature ID</th><th>Feature text</th></tr></thead><tbody>{Array.from({ length: rowCount }, (_, index) => <tr key={`${ids[index] || 'feature'}-${index}`}><td className="analysis-cpc-code">{ids[index] || '—'}</td><td>{texts[index] || '—'}</td></tr>)}</tbody></table></div>;
+function FeatureMappingTable({ features = [], ids = [], texts = [] }) {
+  const rows = features.length ? features : Array.from({ length: Math.max(ids.length, texts.length) }, (_, index) => ({ feature_id: ids[index], text: texts[index] }));
+  return <div className="analysis-feature-mapping-wrap"><table className="analysis-feature-mapping"><thead><tr><th>Feature ID</th><th>Feature text</th></tr></thead><tbody>{rows.map((feature, index) => <tr key={`${feature?.feature_id || 'feature'}-${index}`}><td className="analysis-cpc-code">{feature?.feature_id || '—'}</td><td>{feature?.text || '—'}</td></tr>)}</tbody></table></div>;
 }
 
 function AnalysisValue({ value, fieldKey }) {
@@ -224,9 +236,9 @@ function AnalysisValue({ value, fieldKey }) {
   if (typeof value === 'object') {
     const entries = Object.entries(value).filter(([, item]) => item !== null && item !== undefined && item !== '');
     if (!entries.length) return <span className="analysis-empty-value">No details</span>;
-    if (Array.isArray(value.feature_ids) && Array.isArray(value.feature_texts)) {
-      const remaining = entries.filter(([key]) => key !== 'feature_ids' && key !== 'feature_texts');
-      return <div className="analysis-feature-mapping-block"><FeatureMappingTable ids={value.feature_ids} texts={value.feature_texts} />{remaining.length > 0 && <dl className="analysis-fields">{remaining.map(([key, item]) => <div className="analysis-field" key={key}><dt>{analysisLabel(key)}</dt><dd><AnalysisValue value={item} fieldKey={key} /></dd></div>)}</dl>}</div>;
+    if ((Array.isArray(value.features) && value.features.some(feature => feature && typeof feature === 'object' && 'text' in feature)) || (Array.isArray(value.feature_ids) && Array.isArray(value.feature_texts))) {
+      const remaining = entries.filter(([key]) => !['features', 'feature_ids', 'feature_texts'].includes(key));
+      return <div className="analysis-feature-mapping-block"><FeatureMappingTable features={value.features || []} ids={value.feature_ids || []} texts={value.feature_texts || []} />{remaining.length > 0 && <dl className="analysis-fields">{remaining.map(([key, item]) => <div className="analysis-field" key={key}><dt>{analysisLabel(key)}</dt><dd><AnalysisValue value={item} fieldKey={key} /></dd></div>)}</dl>}</div>;
     }
     if (Array.isArray(value.queries) && value.queries.some(query => query && typeof query === 'object' && 'query' in query)) return <SearchQueryAnalysisView value={value} />;
     if (Array.isArray(value.candidates) && value.candidates.some(candidate => candidate && typeof candidate === 'object' && 'cpc_code' in candidate)) return <CpcAnalysisView value={value} />;
@@ -238,7 +250,7 @@ function AnalysisValue({ value, fieldKey }) {
   return <p className="analysis-text">{String(value)}</p>;
 }
 
-function Help() { return <div className="content narrow"><PageTitle eyebrow="SUPPORT" title="Help" description="A quick guide to managing invention disclosures." /><div className="card help-card"><h2>Getting started</h2><ol><li>Select a customer or add one to your organization.</li><li>Create an invention with a title and UTF-8 text IDF file.</li><li>Open the invention to review analysis versions and download reports.</li><li>Upload a revised IDF from the invention page to create another version.</li></ol><h2>File format</h2><p>Version 1 accepts IDF documents as UTF-8 encoded <code>.txt</code> files, up to 10 MB.</p><h2>Need access?</h2><p>Accounts are provisioned by your organization administrator. Contact them if you need an account or your organization assignment changes.</p></div></div>; }
+function Help() { return <div className="content narrow"><PageTitle eyebrow="SUPPORT" title="Help" description="A quick guide to managing invention disclosures." /><div className="card help-card"><h2>Getting started</h2><ol><li>Select a customer or add one to your workspace.</li><li>Create an invention with a title and UTF-8 text IDF file.</li><li>Open the invention to review analysis versions and download reports.</li><li>Upload a revised IDF from the invention page to create another version.</li></ol><h2>File format</h2><p>Version 1 accepts IDF documents as UTF-8 encoded <code>.txt</code> files, up to 10 MB.</p><h2>Need access?</h2><p>Individuals can sign up with Google or an email verification code. Organization users should use an account linked to their organization; contact its administrator if you need access or your organization assignment changes.</p></div></div>; }
 
 function RoutesRoot() { return <Routes><Route path="/login" element={<Login />} /><Route path="/forgot-password" element={<ForgotPassword />} /><Route path="/reset-password/:uid/:token" element={<ResetPassword />} /><Route element={<Protected />}><Route path="/inventions" element={<Inventions />} /><Route path="/inventions/new" element={<NewInvention />} /><Route path="/inventions/:id" element={<InventionDetail />} /><Route path="/customers/new" element={<NewCustomer />} /><Route path="/help" element={<Help />} /><Route path="*" element={<Navigate to="/inventions" replace />} /></Route></Routes>; }
 
