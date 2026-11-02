@@ -29,7 +29,8 @@
   cd web_portal/frontend
   npm run dev
   ```
-  Keep all three terminals running, then open **http://127.0.0.1:5173/**. Use your regular organization user to sign in; the admin superuser signs in at **http://127.0.0.1:8001/admin/**.
+  Keep all three terminals running, then open **http://127.0.0.1:5173/**. Use your regular organization user to sign in; 
+  the admin superuser signs in at **http://127.0.0.1:8001/admin/**.
 
   If this is the first run, install dependencies and initialize Django once:
   ```powershell
@@ -42,6 +43,9 @@
 .\run_project.ps1
 ```
 
+Google OAuth Client ID & secret for local development are stored in `web_portal/portal_config/local_auth.py`. This file is excluded from Git and should not be shared publicly. The client ID is:
+217329817649-a3dcaa8h6uiud41skojr1uamq4mhr500.apps.googleusercontent.com
+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
 
 
 # =================================================================================================================
