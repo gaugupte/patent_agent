@@ -4,6 +4,7 @@ import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation, useN
 import { api, downloadReport } from './api';
 import './styles.css';
 import './auth.css';
+import './billing.css';
 
 const Auth = createContext(null);
 const useAuth = () => useContext(Auth); // #this is function definition
@@ -13,7 +14,8 @@ const message = (error) => error instanceof Error ? error.message : 'Something w
 function AuthProvider({ children }) {
   const [user, setUser] = useState(undefined);   // hook to manage user state, initially undefined. setUser is a function to update the user state.
   const refresh = () => api('/auth/me/').then(setUser).catch(() => setUser(null));
-  useEffect(() => { refresh(); }, []); //useEffect hook to call refresh function on component mount, which fetches the current user data from the API and updates the user state.
+  useEffect(() => { refresh(); const onAccessExpired = () => refresh(); window.addEventListener('portal-access-expired', onAccessExpired); return () => window.removeEventListener('portal-access-expired', onAccessExpired); }, []); // Refresh account access state after a backend subscription or trial expiry response.
+  useEffect(() => { if (!user?.trial_active || !user.trial_ends_at) return undefined; const timer = window.setTimeout(refresh, Math.max(0, new Date(user.trial_ends_at).getTime() - Date.now())); return () => window.clearTimeout(timer); }, [user?.trial_active, user?.trial_ends_at]);
   return <Auth.Provider value={{ user, setUser, refresh }}>{children}</Auth.Provider>;
 }
 
@@ -23,7 +25,13 @@ function Protected() {
   const { user } = useAuth();
   const location = useLocation();
   if (user === undefined) return <div className="loading">Loading your workspace…</div>;
-  return user ? <Shell><Outlet /></Shell> : <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!user.access_active) {
+    const canManage = user.role === 'organization_admin';
+    if (canManage && location.pathname === '/organization') return <Shell><Outlet /></Shell>;
+    return canManage ? <Navigate to="/organization" replace /> : <Shell><SubscriptionRequired /></Shell>;
+  }
+  return <Shell><Outlet /></Shell>;
 }
 
 function Shell({ children }) {
@@ -33,10 +41,11 @@ function Shell({ children }) {
   const signOut = async () => { try { await api('/auth/logout/', { method: 'POST' }); } finally { setUser(null); navigate('/login'); } };
   return <div className="app-shell">
     <aside className="sidebar">
-      <Link to="/inventions" className="brand"><span className="brand-mark">P</span><span>Patent<span className="brand-light">Desk</span></span></Link>
+      <Link to="/inventions" className="brand"><BrandMark /><span>PatentDesk</span></Link>
       <div className="workspace-label">WORKSPACE</div>
       <div className="org-chip"><span className="org-dot" />{user?.organization?.name}</div>
       <nav className="nav-links">
+        {user?.role === 'organization_admin' && <Link className={location.pathname === '/organization' ? 'active' : ''} to="/organization"><span>⚙</span>{user?.organization?.access_type === 'individual' ? 'My subscription' : 'Organization'}</Link>}
         <Link className={location.pathname.startsWith('/inventions') ? 'active' : ''} to="/inventions"><span>▤</span> My inventions</Link>
         <Link className={location.pathname === '/customers/new' ? 'active' : ''} to="/customers/new"><span>＋</span> Add customer</Link>
         <Link className={location.pathname === '/help' ? 'active' : ''} to="/help"><span>?</span> Help</Link>
@@ -51,6 +60,15 @@ function PageTitle({ eyebrow, title, description, action }) { return <div classN
 function Notice({ error, success }) { return <>{error && <div className="notice error">{error}</div>}{success && <div className="notice success">{success}</div>}</>; }
 function Empty({ title, body, action }) { return <div className="empty"><div className="empty-icon">◇</div><h3>{title}</h3><p>{body}</p>{action}</div>; }
 
+function BrandMark({ large = false }) { return <span className={`brand-mark${large ? ' brand-mark-large' : ''}`} aria-label="PatentDesk"><span>P</span><span>D</span></span>; }
+
+function Welcome() {
+  const { user } = useAuth();
+  if (user === undefined) return <div className="loading">Loading PatentDesk…</div>;
+  if (user) return <Navigate to={user.access_active ? '/inventions' : '/organization'} replace />;
+  return <AuthFrame><div className="auth-card welcome-card"><BrandMark large /><div className="eyebrow">INVENTION ANALYSIS WORKSPACE</div><h1>Welcome to PatentDesk</h1><p className="muted">Sign in to your workspace or create an account to get started.</p><div className="welcome-actions"><Link className="button primary full" to="/login">Sign in</Link><Link className="button secondary full" to="/register">Register</Link></div></div><div className="auth-foot">PatentDesk</div></AuthFrame>;
+}
+
 function Login() {
   const { user, setUser } = useAuth(); const navigate = useNavigate(); const location = useLocation();
   const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
@@ -60,17 +78,70 @@ function Login() {
   const emailCodeSubmit = async event => { event.preventDefault(); setBusy(true); setError(''); try { await api('/auth/email-code/request/', { method: 'POST', body: JSON.stringify({ email }) }); setCodeSent(true); } catch (e) { setError(message(e)); } finally { setBusy(false); } };
   const verifyEmailCode = async event => { event.preventDefault(); setBusy(true); setError(''); try { setUser(await api('/auth/email-code/verify/', { method: 'POST', body: JSON.stringify({ email, code }) })); navigate('/inventions', { replace: true }); } catch (e) { setError(message(e)); } finally { setBusy(false); } };
   const authError = new URLSearchParams(location.search).get('auth_error');
-  const providerError = authError === 'google_not_configured' ? 'Google sign-in has not been configured yet.' : authError === 'account_conflict' ? 'More than one portal account uses this email. Contact your administrator.' : authError === 'account_inactive' ? 'This portal account is inactive or not assigned to an active organization. Contact your administrator.' : authError ? 'Google sign-in could not be completed. Please try again.' : '';
-  return <AuthFrame><div className="auth-card"><div className="auth-icon">P</div><div className="eyebrow">WELCOME</div><h1>Sign in to PatentDesk</h1><p className="muted">Use Google, an email verification code, or your organization account.</p><Notice error={error || providerError} />
-    <a className="button secondary full" href="/api/auth/google/login/">Continue with Google</a>
-    <div className="auth-divider"><span>OR</span></div>
-    {codeSent ? <form onSubmit={verifyEmailCode} className="form"><p className="muted">Enter the 6-digit code sent to <b>{email}</b>.</p><label>Verification code<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={e => setCode(e.target.value)} required /></label><button className="button primary full" disabled={busy}>{busy ? 'Verifying…' : 'Verify email and continue'}</button><button type="button" className="auth-link-button" onClick={() => { setCodeSent(false); setCode(''); }}>Use a different email</button></form> : <form onSubmit={emailCodeSubmit} className="form"><label>Email address<input type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required /></label><button className="button secondary full" disabled={busy}>{busy ? 'Sending code…' : 'Continue with email code'}</button></form>}
-    <div className="auth-divider"><span>OR</span></div>
-    <details className="password-login"><summary>Sign in with organization username and password</summary><form onSubmit={submit} className="form"><label>Username<input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required /></label><label>Password<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label><button className="button primary full" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button></form><Link className="auth-link" to="/forgot-password">Forgot password?</Link></details>
-    </div><div className="auth-foot">PatentDesk · Private organization portal</div></AuthFrame>;
+  const providerError = authError === 'google_not_configured' ? 'Google sign-in has not been configured yet.' : authError === 'account_conflict' ? 'More than one portal account uses this email. Contact your administrator.' : authError === 'account_inactive' ? 'This portal account is inactive or not assigned to an active organization. Contact your administrator.' : authError === 'session_already_active' ? 'This account is already signed in on another browser or device. Sign out there before trying again.' : authError === 'registration_required' ? 'Choose an access type and complete registration before signing in.' : authError === 'password_login_required' ? 'This paid individual account must use its username and password.' : authError ? 'Google sign-in could not be completed. Please try again.' : '';
+  return <AuthFrame><div className="auth-card"><BrandMark large /><div className="eyebrow">ACCOUNT SIGN IN</div><h1>Sign in to PatentDesk</h1><p className="muted">Use your username and password. This sign-in works for individual and organization accounts.</p><Notice error={error || providerError} />
+    <form onSubmit={submit} className="form"><label>Username<input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required /></label><label>Password<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required /></label><button className="button primary full" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button></form>
+    <Link className="auth-link" to="/forgot-password">Forgot password?</Link>
+    <details className="trial-signin"><summary>Trial account? Sign in with Gmail or email code</summary><a className="button secondary full" href="/api/auth/google/login/">Continue with Gmail</a>
+      {codeSent ? <form onSubmit={verifyEmailCode} className="form"><p className="muted">Enter the 6-digit code sent to <b>{email}</b>.</p><label>Verification code<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={e => setCode(e.target.value)} required /></label><button className="button primary full" disabled={busy}>{busy ? 'Verifying…' : 'Verify email and continue'}</button><button type="button" className="auth-link-button" onClick={() => { setCodeSent(false); setCode(''); }}>Use a different email</button></form> : <form onSubmit={emailCodeSubmit} className="form"><label>Email address<input type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required /></label><button className="button secondary full" disabled={busy}>{busy ? 'Sending code…' : 'Continue with email code'}</button></form>}
+    </details>
+    <Link className="auth-link" to="/">Back to welcome</Link>
+    <Link className="auth-link" to="/register">Register</Link>
+  </div><div className="auth-foot">PatentDesk</div></AuthFrame>;
 }
 
-function AuthFrame({ children }) { return <div className="auth-page"><div className="auth-brand"><span className="brand-mark">P</span> Patent<span className="brand-light">Desk</span></div>{children}</div>; }
+function Register() {
+  const navigate = useNavigate(); const { setUser } = useAuth();
+  const [accessType, setAccessType] = useState('');
+  const [individualPath, setIndividualPath] = useState('');
+  const [plans, setPlans] = useState([]); const [planId, setPlanId] = useState('');
+  const [email, setEmail] = useState(''); const [individualName, setIndividualName] = useState(''); const [organizationName, setOrganizationName] = useState(''); const [seatCount, setSeatCount] = useState(1);
+  const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [passwordConfirmation, setPasswordConfirmation] = useState('');
+  const [intent, setIntent] = useState(''); const [codeSent, setCodeSent] = useState(false); const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [success, setSuccess] = useState('');
+  useEffect(() => { api('/auth/plans/').then(data => { setPlans(data.plans); if (data.plans.length) setPlanId(String(data.plans[0].id)); }).catch(e => setError(message(e))); }, []);
+  const begin = async (event, withGoogle = false) => {
+    event?.preventDefault(); if (event?.currentTarget?.form && !event.currentTarget.form.reportValidity()) return; setBusy(true); setError(''); setSuccess('');
+    try {
+      const isTrial = accessType === 'individual' && individualPath === 'trial';
+      const result = await api('/auth/register/start/', { method: 'POST', body: JSON.stringify({ access_type: accessType, start_trial: isTrial, email, individual_name: individualName, organization_name: organizationName, plan_id: isTrial ? null : planId, seat_count: accessType === 'individual' ? 1 : Number(seatCount), username: accessType === 'individual' && !isTrial ? username : undefined, password: accessType === 'individual' && !isTrial ? password : undefined, password_confirmation: accessType === 'individual' && !isTrial ? passwordConfirmation : undefined }) });
+      setIntent(result.registration_intent);
+      if (withGoogle) { window.location.href = `/api/auth/google/login/?registration_intent=${encodeURIComponent(result.registration_intent)}`; return; }
+      await api('/auth/email-code/request/', { method: 'POST', body: JSON.stringify({ email }) });
+      setCodeSent(true); setSuccess(`${result.detail} A verification code was sent to ${email}.`);
+    } catch (e) { setError(message(e)); } finally { setBusy(false); }
+  };
+  const verify = async event => {
+    event.preventDefault(); setBusy(true); setError('');
+    try { const user = await api('/auth/email-code/verify/', { method: 'POST', body: JSON.stringify({ email, code, registration_intent: intent }) }); setUser(user); navigate('/inventions', { replace: true }); }
+    catch (e) { setError(message(e)); } finally { setBusy(false); }
+  };
+  const authError = new URLSearchParams(window.location.search).get('auth_error');
+  const googleMessage = authError === 'google_not_configured' ? 'Google sign-in is not configured. Continue with email verification instead.' : authError === 'registration_required' ? 'Choose an access type and plan to create your account.' : authError === 'registration_expired' ? 'Your registration checkout expired. Please start again.' : authError === 'registration_email_mismatch' ? 'Sign in with the same Google email address you entered during registration.' : authError === 'registration_conflict' ? 'An account or organization with those details already exists. Sign in or use another organization name.' : authError === 'individual_email_required' ? 'Direct individual registration uses email verification plus the username and password you choose.' : '';
+  const individualTrial = accessType === 'individual' && individualPath === 'trial';
+  const individualPaid = accessType === 'individual' && individualPath === 'paid';
+  return <AuthFrame><div className="auth-card"><BrandMark large /><div className="eyebrow">CREATE ACCOUNT</div><h1>Choose your access</h1><p className="muted">Individuals can start one seven-day trial with Google or email verification, or register directly with a plan, username, and password. Organization admins choose seats and a plan.</p><Notice error={error || googleMessage} success={success} />
+    {!accessType ? <div className="access-options"><button className="access-option" onClick={() => setAccessType('individual')}><b>Individual</b><span>Try the product for seven days or buy one seat now.</span></button><button className="access-option" onClick={() => setAccessType('organization')}><b>Organization</b><span>Choose seats for your team and manage members.</span></button></div> : <>
+      <button className="auth-link-button" onClick={() => { setAccessType(''); setIndividualPath(''); setIntent(''); setCodeSent(false); setPassword(''); setPasswordConfirmation(''); }}>← Change access type: {accessType}</button>
+      {accessType === 'individual' && !individualPath && <div className="access-options"><button className="access-option" onClick={() => setIndividualPath('trial')}><b>Start free trial</b><span>One seven-day trial, verified with Gmail or an email code.</span></button><button className="access-option" onClick={() => setIndividualPath('paid')}><b>Register with a plan</b><span>Buy one seat now and create your username and password.</span></button></div>}
+      {accessType === 'individual' && individualPath && <button className="auth-link-button" onClick={() => { setIndividualPath(''); setIntent(''); setCodeSent(false); setCode(''); setPassword(''); setPasswordConfirmation(''); }}>← Choose trial or paid registration</button>}
+      {codeSent ? <form className="form" onSubmit={verify}><p className="muted">Enter the 6-digit code sent to <b>{email}</b>.{individualTrial ? ' This starts your one-time seven-day trial.' : individualPaid ? ` Your password was checked during registration. Confirm your email to finish account creation for one seat. Username: ${username}.` : ' This verifies your organization registration after simulated checkout.'}</p><label>Verification code<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={e => setCode(e.target.value)} required /></label><button className="button primary full" disabled={busy}>{busy ? 'Verifying…' : individualPaid ? 'Confirm email and register' : individualTrial ? 'Start free trial' : 'Verify and create account'}</button></form> : (individualPath || accessType === 'organization') && <form className="form" onSubmit={event => event.preventDefault()}>
+        <label>Email address<input type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required /></label>
+        {accessType === 'individual' && <label>Your name<input autoComplete="name" maxLength={160} value={individualName} onChange={e => setIndividualName(e.target.value)} required /></label>}
+        {individualPaid && <><label>Choose username<input autoComplete="username" maxLength={16} value={username} onChange={e => setUsername(e.target.value)} required /></label><label>Create password<input type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} required /><small className="password-criteria">Use at least 8 characters. Avoid common passwords, all-numeric passwords, and passwords too similar to your username, name, or email.</small></label><label>Confirm password<input type="password" autoComplete="new-password" value={passwordConfirmation} onChange={e => setPasswordConfirmation(e.target.value)} required /></label></>}
+        {accessType === 'organization' && <label>Organization name<input maxLength={160} value={organizationName} onChange={e => setOrganizationName(e.target.value)} required /></label>}
+        {(individualPaid || accessType === 'organization') && <><label>Plan<select value={planId} onChange={e => setPlanId(e.target.value)} required>{plans.map(plan => <option key={plan.id} value={plan.id}>{plan.name} · {plan.billing_interval_label} · ₹{plan.discounted_price}/seat{Number(plan.discount_percent) > 0 ? ` (${plan.discount_percent}% discount)` : ''}</option>)}</select></label>{individualPaid ? <div className="simulated-payment">One seat for your individual workspace. Test checkout only; no real payment will be taken.</div> : <><label>Seats to purchase<input type="number" min="1" max="500" value={seatCount} onChange={e => setSeatCount(e.target.value)} required /><small className="field-hint">Includes your organization administrator seat.</small></label><div className="simulated-payment">Test checkout only · no real payment will be taken.</div></>}</>}
+        {individualTrial && <div className="simulated-payment">Start your one-time seven-day trial with Gmail or an email verification code. No payment is required.</div>}
+        {individualTrial ? <><button type="button" className="button primary full" disabled={busy} onClick={event => begin(event)}>{busy ? 'Sending verification code…' : 'Start trial with email code'}</button><button type="button" className="button secondary full" disabled={busy} onClick={event => begin(event, true)}>Start trial with Gmail</button></> : individualPaid ? <button type="button" className="button primary full" disabled={busy || !plans.length || !planId} onClick={event => begin(event)}>{busy ? 'Preparing registration…' : 'Continue with email verification'}</button> : <><button type="button" className="button primary full" disabled={busy || !plans.length || !planId} onClick={event => begin(event)}>{busy ? 'Preparing test checkout…' : 'Continue with email verification'}</button><button type="button" className="button secondary full" disabled={busy || !plans.length || !planId} onClick={event => begin(event, true)}>Continue with Google</button></>}
+      </form>}
+    </>}
+    <Link className="auth-link" to="/login">Already have an account? Sign in</Link>
+  </div><div className="auth-foot">PatentDesk · Test subscription checkout</div></AuthFrame>;
+}
+
+function SubscriptionRequired() { return <div className="content narrow"><PageTitle eyebrow="SUBSCRIPTION" title="Access expired" description="Your assigned subscription is not currently active." /><div className="card"><p>Access to inventions and analysis stops immediately when the subscription expires. Please contact your organization administrator to assign or renew a seat.</p><button className="button ghost" onClick={async () => { await api('/auth/logout/', { method: 'POST' }).catch(() => {}); window.location.assign('/login'); }}>Sign out</button></div></div>; }
+
+function AuthFrame({ children }) { return <div className="auth-page"><div className="auth-brand"><BrandMark /> <span>PatentDesk</span></div>{children}</div>; }
 
 function ForgotPassword() {
   const [email, setEmail] = useState(''); const [done, setDone] = useState(false); const [error, setError] = useState('');
@@ -250,8 +321,42 @@ function AnalysisValue({ value, fieldKey }) {
   return <p className="analysis-text">{String(value)}</p>;
 }
 
+function OrganizationPage() {
+  const { user, refresh } = useAuth();
+  const [billing, setBilling] = useState(null); const [plans, setPlans] = useState([]);
+  const [planId, setPlanId] = useState(''); const [seatCount, setSeatCount] = useState(1); const [email, setEmail] = useState(''); const [purchaseId, setPurchaseId] = useState('');
+  const [password, setPassword] = useState(''); const [passwordConfirmation, setPasswordConfirmation] = useState('');
+  const [error, setError] = useState(''); const [success, setSuccess] = useState(''); const [busy, setBusy] = useState(false);
+  const load = () => api('/auth/organization/billing/').then(data => { setBilling(data); setPurchaseId(current => data.purchases.find(item => item.available > 0 && String(item.id) === current)?.id || data.purchases.find(item => item.available > 0)?.id?.toString() || ''); }).catch(e => setError(message(e)));
+  useEffect(() => { load(); api('/auth/plans/').then(data => { setPlans(data.plans); if (data.plans.length) setPlanId(String(data.plans[0].id)); }).catch(e => setError(message(e))); }, []);
+  const purchase = async event => { event.preventDefault(); setBusy(true); setError(''); setSuccess(''); try { const result = await api('/auth/organization/purchase-seats/', { method: 'POST', body: JSON.stringify({ plan_id: planId, seat_count: Number(seatCount), password, password_confirmation: passwordConfirmation }) }); setSuccess(result.detail); setPassword(''); setPasswordConfirmation(''); await load(); await refresh(); } catch (e) { setError(message(e)); } finally { setBusy(false); } };
+  const addUser = async event => { event.preventDefault(); setBusy(true); setError(''); setSuccess(''); try { await api('/auth/organization/users/', { method: 'POST', body: JSON.stringify({ email, purchase_id: purchaseId }) }); setEmail(''); setSuccess('User added and assigned the selected plan seat. They can sign in with Google or an email verification code.'); await load(); } catch (e) { setError(message(e)); } finally { setBusy(false); } };
+  const removeUser = async user => { setBusy(true); setError(''); setSuccess(''); try { await api(`/auth/organization/users/${user.id}/remove/`, { method: 'POST' }); setSuccess(`${user.email} was disabled and the seat released.`); await load(); } catch (e) { setError(message(e)); } finally { setBusy(false); } };
+  const individual = billing?.organization?.access_type === 'individual';
+  const portalAdmin = Boolean(user?.is_portal_admin);
+  const trialEnds = billing?.trial_ends_at ? new Date(billing.trial_ends_at).toLocaleString() : '';
+  const subscriptionEnds = billing?.subscription_ends_at ? new Date(billing.subscription_ends_at).toLocaleDateString() : '';
+  const paidAccessActive = Boolean(billing?.subscription_active);
+  const pageTitle = portalAdmin && individual ? 'Portal administrator' : individual ? (billing?.trial_active ? 'Your seven-day trial' : paidAccessActive ? 'Your subscription' : user?.password_login_enabled ? 'Renew subscription' : 'Complete registration') : 'Organization access';
+  const pageDescription = portalAdmin && individual ? 'Portal administrator access does not expire with a trial or subscription.' : individual ? (billing?.trial_active ? 'Your individual trial is active.' : paidAccessActive ? `Your individual plan is active through ${subscriptionEnds}.` : user?.password_login_enabled ? 'Your subscription has expired. Choose a plan to restore access.' : 'Your trial has ended. Choose a plan and set a password to continue.') : 'Purchase seats with a simulated checkout, then assign each seat to a user.';
+  return <div className="content"><PageTitle eyebrow={individual ? 'INDIVIDUAL PLAN' : 'ORGANIZATION ADMIN'} title={pageTitle} description={pageDescription} />
+    <Notice error={error} success={success} />
+    {portalAdmin && individual && <div className="trial-banner"><b>Portal administrator access is exempt</b><span>This account will not lose portal access when a trial or subscription expires.</span></div>}
+    {individual && !portalAdmin && paidAccessActive && <div className="trial-banner"><b>Your paid access is active</b><span>Your plan is valid through {subscriptionEnds}. Sign in with username <strong>{user?.username}</strong> and your password.</span></div>}
+    {individual && !portalAdmin && !billing?.trial_active && !user?.password_login_enabled && <div className="trial-ended-notice"><b>Your seven-day free trial has ended. Buy access to continue.</b><p>It ended {trialEnds}. Your invention workspace is paused until you complete registration:</p><ol><li>Select a plan below and complete the simulated checkout. No real payment is collected in this test version.</li><li>Create and confirm a password for your account.</li><li>Your username is <strong>{user?.username}</strong>. After checkout, sign in with this username and the password you created. Google and email-code sign-in are only for the trial.</li></ol></div>}
+    {portalAdmin && individual ? null : !individual || !billing?.trial_active ? <div className="billing-summary"><div className="card"><small>Purchased seats</small><b>{billing?.seat_count ?? '—'}</b></div><div className="card"><small>Assigned seats</small><b>{billing?.assigned_seats ?? '—'}</b></div><div className="card"><small>Available seats</small><b>{billing?.available_seats ?? '—'}</b></div></div> : <div className="trial-banner"><b>Trial access is active</b><span>Your trial ends {trialEnds}. You can keep using the portal until then.</span></div>}
+    {(portalAdmin && individual) || (individual && (billing?.trial_active || paidAccessActive)) ? null : <div className="organization-grid"><section className="card"><h2>{individual ? 'Choose a plan and register' : 'Purchase seats'}</h2><p className="muted">Choose the plan{individual ? '' : ' and number of seats'} first. Test checkout creates active access without charging money.</p><form className="form" onSubmit={purchase}><label>Plan<select value={planId} onChange={e => setPlanId(e.target.value)} required>{plans.map(plan => <option key={plan.id} value={plan.id}>{plan.name} · {plan.billing_interval_label} · ₹{plan.discounted_price}/seat</option>)}</select></label>{!individual && <label>Number of seats<input type="number" min="1" max="500" value={seatCount} onChange={e => setSeatCount(e.target.value)} required /></label>}{individual && <><div className="login-identity">Your login username is <b>{user?.username}</b>.</div>{!user?.password_login_enabled && <><label>Create password<input type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} required /></label><label>Confirm password<input type="password" autoComplete="new-password" value={passwordConfirmation} onChange={e => setPasswordConfirmation(e.target.value)} required /></label></>}</>}<div className="simulated-payment">Simulation only · no payment is collected.{!individual && ' One seat is assigned to the organization administrator.'}</div><button className="button primary" disabled={busy || !planId}>{busy ? 'Processing…' : individual ? 'Complete registration and subscribe' : 'Simulate purchase'}</button></form></section>
+    {!individual && <section className="card"><h2>Add a user</h2><p className="muted">Choose which purchased plan seat to assign. A user can be added only when that purchase has an available seat.</p><form className="form" onSubmit={addUser}><label>User email<input type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} required /></label><label>Purchased plan<select value={purchaseId} onChange={e => setPurchaseId(e.target.value)} required><option value="">Choose an available seat</option>{(billing?.purchases || []).filter(item => item.available > 0).map(item => <option key={item.id} value={item.id}>{item.plan.name} · {item.plan.billing_interval_label} · valid through {item.ends_at} · {item.available} available</option>)}</select></label><button className="button primary" disabled={busy || !purchaseId}>{busy ? 'Adding…' : 'Add organization user'}</button>{billing?.available_seats === 0 && <small className="field-hint">Purchase more seats before adding another user.</small>}</form></section>}</div>}
+    {!individual && <><div className="split-heading"><h2>Users</h2><p>Access ends immediately on the subscription end date.</p></div>
+    <div className="table-card"><table><thead><tr><th>USER</th><th>ROLE</th><th>PLAN</th><th>VALID THROUGH</th><th>STATUS</th><th></th></tr></thead><tbody>{(billing?.users || []).map(user => <tr key={user.id}><td><b>{user.email}</b><small>{user.username}</small></td><td>{user.role === 'organization_admin' ? 'Organization admin' : 'Member'}</td><td>{user.plan ? `${user.plan.name} · ${user.plan.billing_interval_label}` : 'No active seat'}</td><td>{user.ends_at || '—'}</td><td>{user.is_active && user.ends_at ? 'Active' : 'Inactive'}</td><td>{user.role !== 'organization_admin' && user.is_active && <button className="table-action" disabled={busy} onClick={() => removeUser(user)}>Remove</button>}</td></tr>)}</tbody></table>{!billing?.users?.length && <p className="table-empty">No users yet.</p>}</div></>}
+    {(!portalAdmin || !individual) && <><div className="split-heading"><h2>Seat purchases</h2><p>Purchases are marked as simulated and no card or payment details are collected.</p></div>
+    <div className="table-card"><table><thead><tr><th>PLAN</th><th>SEATS</th><th>ASSIGNED</th><th>VALIDITY</th><th>TOTAL</th><th>MODE</th></tr></thead><tbody>{(billing?.purchases || []).map(item => <tr key={item.id}><td>{item.plan.name} · {item.plan.billing_interval_label}</td><td>{item.seat_count}</td><td>{item.assigned}</td><td>{item.starts_at} — {item.ends_at}</td><td>₹{item.total_price}</td><td>{item.payment_mode}</td></tr>)}</tbody></table>{!billing?.purchases?.length && <p className="table-empty">No purchases yet.</p>}</div>
+    </>}
+  </div>;
+}
+
 function Help() { return <div className="content narrow"><PageTitle eyebrow="SUPPORT" title="Help" description="A quick guide to managing invention disclosures." /><div className="card help-card"><h2>Getting started</h2><ol><li>Select a customer or add one to your workspace.</li><li>Create an invention with a title and UTF-8 text IDF file.</li><li>Open the invention to review analysis versions and download reports.</li><li>Upload a revised IDF from the invention page to create another version.</li></ol><h2>File format</h2><p>Version 1 accepts IDF documents as UTF-8 encoded <code>.txt</code> files, up to 10 MB.</p><h2>Need access?</h2><p>Individuals can sign up with Google or an email verification code. Organization users should use an account linked to their organization; contact its administrator if you need access or your organization assignment changes.</p></div></div>; }
 
-function RoutesRoot() { return <Routes><Route path="/login" element={<Login />} /><Route path="/forgot-password" element={<ForgotPassword />} /><Route path="/reset-password/:uid/:token" element={<ResetPassword />} /><Route element={<Protected />}><Route path="/inventions" element={<Inventions />} /><Route path="/inventions/new" element={<NewInvention />} /><Route path="/inventions/:id" element={<InventionDetail />} /><Route path="/customers/new" element={<NewCustomer />} /><Route path="/help" element={<Help />} /><Route path="*" element={<Navigate to="/inventions" replace />} /></Route></Routes>; }
+function RoutesRoot() { return <Routes><Route path="/" element={<Welcome />} /><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/forgot-password" element={<ForgotPassword />} /><Route path="/reset-password/:uid/:token" element={<ResetPassword />} /><Route element={<Protected />}><Route path="/organization" element={<OrganizationPage />} /><Route path="/inventions" element={<Inventions />} /><Route path="/inventions/new" element={<NewInvention />} /><Route path="/inventions/:id" element={<InventionDetail />} /><Route path="/customers/new" element={<NewCustomer />} /><Route path="/help" element={<Help />} /><Route path="*" element={<Navigate to="/inventions" replace />} /></Route></Routes>; }
 
 createRoot(document.getElementById('root')).render(<React.StrictMode><BrowserRouter><AuthProvider><RoutesRoot /></AuthProvider></BrowserRouter></React.StrictMode>);

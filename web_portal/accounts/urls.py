@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import api
+from . import api, billing
 
 
 urlpatterns = [
@@ -13,4 +13,10 @@ urlpatterns = [
     path("me/", api.current_user, name="portal-current-user"),
     path("password-reset/", api.request_password_reset, name="portal-password-reset"),
     path("password-reset/confirm/", api.confirm_password_reset, name="portal-password-reset-confirm"),
+    path("plans/", billing.public_plans, name="public-plans"),
+    path("register/start/", billing.start_registration, name="register-start"),
+    path("organization/billing/", billing.organization_billing, name="organization-billing"),
+    path("organization/purchase-seats/", billing.simulate_seat_purchase, name="organization-purchase-seats"),
+    path("organization/users/", billing.add_organization_user, name="organization-add-user"),
+    path("organization/users/<int:user_id>/remove/", billing.remove_organization_user, name="organization-remove-user"),
 ]

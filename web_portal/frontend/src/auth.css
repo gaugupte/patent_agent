@@ -1,4 +1,23 @@
 .auth-card > .button { margin-top: 8px; }
+.brand-mark{position:relative;overflow:hidden;background:linear-gradient(145deg,#173b70,#3978e5);border:1px solid #ffffff40;border-radius:10px;box-shadow:0 5px 13px #356bea38;flex:0 0 auto}
+.brand-mark>span{position:absolute;line-height:1;font-weight:850;letter-spacing:-1.5px}
+.brand-mark>span:first-child{left:5px;top:3px;font-size:20px;color:#fff}
+.brand-mark>span:last-child{right:3px;bottom:2px;font-size:17px;color:#acd0ff;text-shadow:0 1px 3px #12315f}
+.brand-mark-large{width:48px;height:48px;border-radius:14px;margin-bottom:25px}
+.brand-mark-large>span:first-child{left:7px;top:5px;font-size:28px}
+.brand-mark-large>span:last-child{right:5px;bottom:3px;font-size:23px}
+.welcome-card{text-align:center}
+.welcome-card>.brand-mark{margin-left:auto;margin-right:auto}
+.welcome-card .eyebrow{margin-bottom:7px}
+.welcome-actions{display:grid;gap:11px;margin-top:24px}
+.trial-signin{margin-top:20px;border-top:1px solid #edf0f4;padding-top:15px}
+.trial-signin summary{color:#53647b;text-align:center;font-size:11px;font-weight:600;cursor:pointer;list-style:none}
+.trial-signin summary::-webkit-details-marker{display:none}
+.trial-signin summary::after{content:"＋";margin-left:7px;color:#356bea}
+.trial-signin[open] summary{margin-bottom:13px}
+.trial-signin[open] summary::after{content:"−"}
+.trial-signin .form{margin-top:14px}
+.password-criteria{display:block;color:#718096;font-size:10px;font-weight:400;line-height:1.55}
 .auth-divider { display: flex; align-items: center; gap: 12px; margin: 17px 0; color: #9aa5b3; font-size: 9px; font-weight: 700; letter-spacing: 1px; }
 .auth-divider::before, .auth-divider::after { content: ""; height: 1px; flex: 1; background: #e9edf2; }
 .auth-card .auth-divider + .form { margin-top: 0; }
@@ -6,3 +25,4 @@
 .password-login summary { color: #53647b; text-align: center; font-size: 11px; font-weight: 600; cursor: pointer; }
 .password-login[open] summary { margin-bottom: 14px; }
 .password-login .form { margin-top: 0; }
+.access-options{display:grid;gap:10px;margin:22px 0}.access-option{display:grid;gap:6px;text-align:left;padding:16px;border:1px solid #dce3ec;border-radius:8px;background:#fff;color:#344861;cursor:pointer}.access-option:hover{border-color:#86a4ee;background:#f8faff}.access-option b{font-size:13px}.access-option span{font-size:11px;color:#7e8b9c;line-height:1.5}.simulated-payment{padding:10px 12px;border:1px dashed #d6dfed;border-radius:6px;background:#f8faff;color:#61728a;font-size:11px;line-height:1.5}.auth-card .field-hint{display:block;float:none;margin:0}

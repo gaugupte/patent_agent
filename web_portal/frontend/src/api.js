@@ -46,7 +46,12 @@ export async function api(path, options = {}) {
   // `response.ok` is true for HTTP success statuses such as `200` or `201`.
   // If the request failed, the helper throws an error using Django’s `detail` message when available. Otherwise, it uses the generic message.
   //  In `NewCustomer`, the `catch` block receives that error and displays it.
-  if (!response.ok) throw new Error(payload?.detail || 'The request could not be completed.');
+  if (!response.ok) {
+    if (response.status === 403 && /subscription|trial/i.test(payload?.detail || '')) {
+      window.dispatchEvent(new Event('portal-access-expired'));
+    }
+    throw new Error(payload?.detail || 'The request could not be completed.');
+  }
   return payload;
 
   // On success, return the parsed JSON to the caller. `NewCustomer` doesn’t need the returned customer data, so it just waits for success and then navigates to `/inventions`.
@@ -57,6 +62,9 @@ export async function downloadReport(versionId, suggestedName) {
   const response = await fetch(`/api/versions/${versionId}/report/`, { credentials: 'include' });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
+    if (response.status === 403 && /subscription|trial/i.test(data.detail || '')) {
+      window.dispatchEvent(new Event('portal-access-expired'));
+    }
     throw new Error(data.detail || 'The report could not be downloaded.');
   }
   const url = URL.createObjectURL(await response.blob());
