@@ -4,9 +4,12 @@ import os
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from dotenv import load_dotenv
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 REPOSITORY_ROOT = BASE_DIR.parent
+load_dotenv(REPOSITORY_ROOT / ".env", override=False)
 
 
 def repository_path(value: str | Path) -> Path:
@@ -16,7 +19,10 @@ def repository_path(value: str | Path) -> Path:
 
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() in {"1", "true", "yes"}
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "local-development-only-change-before-deploy")
-if not DEBUG and SECRET_KEY == "local-development-only-change-before-deploy":
+if not DEBUG and (
+    SECRET_KEY == "local-development-only-change-before-deploy"
+    or SECRET_KEY.startswith("replace-with-")
+):
     raise RuntimeError("Set DJANGO_SECRET_KEY before running Django with DJANGO_DEBUG=false.")
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
 
@@ -153,17 +159,10 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() in {"1", "true", "yes"}
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Patent Portal <noreply@example.com>")
 
-try:
-    from . import local_auth as _local_auth
-except ModuleNotFoundError as exc:
-    if exc.name != f"{__package__}.local_auth":
-        raise
-    _local_auth = None
-
-GOOGLE_OAUTH_CLIENT_ID = getattr(_local_auth, "GOOGLE_OAUTH_CLIENT_ID", os.getenv("GOOGLE_OAUTH_CLIENT_ID", ""))
-GOOGLE_OAUTH_CLIENT_SECRET = getattr(_local_auth, "GOOGLE_OAUTH_CLIENT_SECRET", os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", ""))
-GOOGLE_OAUTH_REDIRECT_URI = getattr(_local_auth, "GOOGLE_OAUTH_REDIRECT_URI", os.getenv("GOOGLE_OAUTH_REDIRECT_URI", ""))
-PORTAL_FRONTEND_URL = getattr(_local_auth, "PORTAL_FRONTEND_URL", os.getenv("PORTAL_FRONTEND_URL", "http://127.0.0.1:5173"))
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "")
+GOOGLE_OAUTH_REDIRECT_URI = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "")
+PORTAL_FRONTEND_URL = os.getenv("PORTAL_FRONTEND_URL", "http://127.0.0.1:5173")
 
 LOGIN_URL = "/admin/login/"
 
