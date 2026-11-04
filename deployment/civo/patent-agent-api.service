@@ -1,0 +1,23 @@
+[Unit]
+Description=Patent Agent FastAPI analysis service
+After=network-online.target ollama.service
+Wants=network-online.target
+Requires=ollama.service
+
+[Service]
+Type=simple
+User=patent
+Group=patent
+WorkingDirectory=/srv/patent_agent
+EnvironmentFile=/etc/patent-agent.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/patent_agent/.venv-ai/bin/uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=900
+TimeoutStopSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -43,9 +43,7 @@
 .\run_project.ps1
 ```
 
-Google OAuth Client ID & secret for local development are stored in `web_portal/portal_config/local_auth.py`. This file is excluded from Git and should not be shared publicly. The client ID is:
-217329817649-a3dcaa8h6uiud41skojr1uamq4mhr500.apps.googleusercontent.com
-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
+Configure Google OAuth through environment variables; keep client credentials out of tracked files.
 
 
 # =================================================================================================================

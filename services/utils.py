@@ -22,7 +22,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 # Database configuration
 # ---------------------------------------------------------
 
-DATABASE_URL = "sqlite:///./patent_agent.db"
+DATABASE_URL = os.getenv("AUDIT_DATABASE_URL", "sqlite:///./patent_agent.db")
 
 Base = declarative_base()
 import uuid
@@ -44,7 +44,7 @@ class AuditLog(Base):
 
 def init_db():
     engine = create_engine(
-        "sqlite:///./patent_agent.db",
+        DATABASE_URL,
         pool_size=5,
         max_overflow=10,
         pool_timeout=30,

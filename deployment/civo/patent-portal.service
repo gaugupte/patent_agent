@@ -1,0 +1,23 @@
+[Unit]
+Description=Patent Portal Django service
+After=network-online.target postgresql.service patent-agent-api.service
+Wants=network-online.target
+Requires=postgresql.service patent-agent-api.service
+
+[Service]
+Type=simple
+User=patent
+Group=patent
+WorkingDirectory=/srv/patent_agent/web_portal
+EnvironmentFile=/etc/patent-agent.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/patent_agent/.venv-portal/bin/gunicorn portal_config.wsgi:application --bind 127.0.0.1:8001 --workers 2 --timeout 6100
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
