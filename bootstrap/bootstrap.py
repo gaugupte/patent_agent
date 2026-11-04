@@ -37,7 +37,10 @@ from services.report_service import ReportService
 from services.utils import AuditService, init_db
 
 CPC_COLLECTION = "cpc_patent_classification"
-CPC_CHROMA_PATH = "./data/chroma_db/full_cpc_db"
+CPC_CHROMA_PATH = os.getenv("CPC_CHROMA_PATH", "./data/chroma_db/full_cpc_db")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral")
+REPORT_OUTPUT_DIR = os.getenv("REPORT_OUTPUT_DIR", "./data/reports")
 
 
 def create_llm(settings: Settings):
@@ -48,9 +51,9 @@ def create_llm(settings: Settings):
     # llm = llm.with_middleware(model_logging, tool_error_handler)
 
     llm = ChatOpenAI(
-        base_url="http://localhost:11434/v1",  # Ollama's default local port
+        base_url=OLLAMA_BASE_URL,
         api_key="ollama",  # Required placeholder string
-        model="mistral",  # Matches the model name from step 2
+        model=OLLAMA_MODEL,
         temperature=0,
     )
     print("llm created")
@@ -104,7 +107,7 @@ class ApplicationBootstrap:
         db_engine = init_db()
         audit = AuditService(db_engine)
         # pdf_service = PDFService(output_dir="output")
-        report_service = ReportService(output_dir="./data/reports")
+        report_service = ReportService(output_dir=REPORT_OUTPUT_DIR)
         return ApplicationContext(
             settings=settings,
             llm=llm,
