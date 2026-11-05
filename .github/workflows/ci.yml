@@ -1,5 +1,6 @@
 name: CI
 
+# Run checks for pull requests and updates to main; also allow manual and reusable runs.
 on:
   pull_request:
     branches: [main]
@@ -8,10 +9,12 @@ on:
   workflow_dispatch:
   workflow_call:
 
+# Give workflow jobs read-only access to repository contents.
 permissions:
   contents: read
 
 jobs:
+  # Build the React frontend to catch dependency and production-build errors.
   frontend:
     name: Frontend build
     runs-on: ubuntu-latest
@@ -27,6 +30,7 @@ jobs:
       - run: npm run build
         working-directory: web_portal/frontend
 
+  # Install Python dependencies, validate Django/Python configuration, and run pytest.
   backend:
     name: Django and Python checks
     runs-on: ubuntu-latest
@@ -49,11 +53,13 @@ jobs:
         run: python web_portal/manage.py check
       - name: Run portal tests
         run: pytest
+      # Parse deployment scripts without changing or executing the production VM.
       - name: Check deployment shell script syntax
         run: |
           bash -n deployment/civo/setup-vm.sh
           bash -n deployment/civo/deploy-release.sh
 
+  # Use Windows PowerShell to parse the Windows-only data preparation script.
   powershell:
     name: PowerShell script syntax
     runs-on: windows-latest
