@@ -2,6 +2,68 @@
 
 This runbook deploys the React portal, Django, FastAPI/LangGraph, PostgreSQL, Chroma data, and Ollama on one Ubuntu 24.04 Civo Compute VM. Run the common steps once, then choose either the CPU or GPU branch.
 
+## Run the Django tests locally
+
+The portal tests use pytest and pytest-django with a temporary SQLite test database and in-memory upload storage. From the project root with your project virtual environment active:
+
+```powershell
+python -m pip install -r requirements-test.txt
+$env:DATABASE_URL = "sqlite:///:memory:"
+python -m pytest
+```
+
+CI runs the same pytest suite as part of the backend job. The test dependencies are separate from the production portal requirements.
+
+## Quick path: prepare a new VM with scripts
+
+For a **new Ubuntu 24.04 VM**, the scripts automate dependency installation, the React build, Python environments, Ollama, PostgreSQL, environment-file creation, data installation, Django setup, systemd, Nginx, and HTTPS. They do not create the Civo VM/firewall, configure DNS or OAuth in provider dashboards, or clone your private repository.
+
+1. Complete sections 1–4 below: prepare the private source revision, create the VM and firewall, create the `patent` account and `/srv/patent_agent`, set up its read-only Git deploy key, and clone the repository there. Point your DNS A record at the new VM and wait until it resolves. Do not start the application services manually.
+2. From Windows PowerShell in your local project root, transfer the ignored application data and export the local portal database to a fixture:
+
+   ```powershell
+   .\deployment\civo\prepare-data.ps1 -HostName patentdesk.gvgconsulting.in
+   ```
+
+   Replace the hostname with the VM's DNS name (or public IP). Add `-InitialUser <image-user>` if the VM image uses a different initial SSH username. The command uses your existing SSH access and local Python environment.
+3. SSH to the VM and run the setup once:
+
+   ```bash
+   sudo bash /srv/patent_agent/deployment/civo/setup-vm.sh
+   ```
+
+   It asks for the public hostname, certificate email, and optional Google OAuth credentials. The VM's DNS A record must already point to its public IPv4. Configure the same OAuth callback in Google Cloud: `https://YOUR_DOMAIN/api/auth/google/callback/`. The script generates the Django and PostgreSQL secrets and stores them in root-owned `/etc/patent-agent.env`; it does not print them.
+4. When prompted, import the local portal fixture if you want its users and records, and create a Django superuser only if the imported data has no admin. At completion, open `https://YOUR_DOMAIN/` and check the displayed service status command if anything fails.
+
+Optional provider API keys and SMTP settings are left blank by the script. Add them later with `sudoedit /etc/patent-agent.env`, then restart the services with `sudo systemctl restart patent-agent-api patent-portal`. Never paste these secrets into a command that will be saved in shell history or into Git.
+
+The setup script deliberately stops if either application service is already active or its completion marker exists. Use it only on a new VM; it is not an upgrade or repair script for the running production VM. For an existing `/etc/patent-agent.env`, it preserves that file and only asks for the certificate email. The detailed manual instructions below remain available when you need to troubleshoot or run a step individually.
+
+## Manual CD: deploy a tested commit to the existing VM
+
+The separate **Deploy to Civo Production** workflow runs only when you manually start it on `main`, select the production confirmation checkbox, and all three CI jobs pass. It calls the same checks defined in `ci.yml`, then sends the selected commit's `deployment/civo/deploy-release.sh` to the VM over SSH; the script fetches and deploys that exact commit. The clean-VM `setup-vm.sh` is not used for updates.
+
+Before using the job:
+
+1. Commit and push the workflow, tests, deployment scripts, and application changes to `main`. Confirm the normal CI run passes.
+2. Create a **separate SSH key pair for deployment**. Add only its public key to the VM account used by the workflow. Do not reuse the Git read-only deploy key. The workflow's SSH account needs non-interactive `sudo` access because the VM release script stops systemd services and restores PostgreSQL during rollback. Treat the private key as a root-level production credential.
+3. Add these repository Actions secrets under **Settings → Secrets and variables → Actions**:
+
+   | Secret | Value |
+   | --- | --- |
+   | `CIVO_DEPLOY_HOST` | VM public DNS name or IP |
+   | `CIVO_DEPLOY_USER` | SSH account name, normally `ubuntu` |
+   | `CIVO_DEPLOY_SSH_KEY` | Private key from the separate deployment key pair |
+   | `CIVO_DEPLOY_KNOWN_HOSTS` | Verified SSH host-key line for this VM |
+
+   Obtain the host key from a trusted SSH connection and verify its fingerprint against the VM console or a fingerprint you recorded earlier before saving it. Do not trust an unverified `ssh-keyscan` result by itself.
+4. The workflow uses a GitHub-hosted runner, so that runner must be able to reach the VM on TCP 22. The current firewall rule that allows only your own IP will block it. GitHub-hosted runner IP ranges are large and change over time; GitHub does not recommend using the standard hosted-runner ranges as internal allowlists. Arrange a private network route or another reviewed access method before running the job. This runbook does not open SSH to the internet.
+5. In GitHub, open **Actions → Deploy to Civo Production → Run workflow**, select `main`, check **Deploy this main-branch commit to the Civo production VM**, and start it. The deploy job begins only after frontend build, backend tests/checks, and PowerShell syntax checks pass.
+
+The release script stops the portal and API, saves a custom-format PostgreSQL dump under `/var/backups/patent-agent/`, updates dependencies and the frontend, applies migrations, collects static assets, restarts services, then checks FastAPI, the portal health endpoint, and the HTTPS homepage. A deployment failure triggers a rollback attempt: restore the previous Git commit and the pre-deploy PostgreSQL dump, rebuild, and restart. The failed workflow remains failed even if rollback succeeds, and prints the backup path. Check service logs after either outcome. This rollback does not restore Chroma, uploaded files, reports, or audit SQLite; the deployment leaves those persistent data paths alone. Keep a separate off-VM backup for disaster recovery, and remove old release dumps only after you have verified a newer backup.
+
+The first run can cause downtime while services stop, dependencies install, migrations run, and health checks complete. Database restoration reverts portal database changes made after the backup, so the job should be started during a quiet period. Database migrations that irreversibly change external data still need a migration-specific recovery plan.
+
 ## 0. Choose the VM
 
 | Profile | Civo selection | Region | GPU | Current list price, compute only |
@@ -92,7 +154,7 @@ sudo cat /home/patent/.ssh/id_ed25519.pub
 Add the displayed **public** key as a read-only deploy key to your private Git repository. Keep the private key on the VM. Then clone the repository:
 
 ```bash
-sudo -u patent git clone git@github.com:YOUR_ORG/YOUR_PRIVATE_REPO.git /srv/patent_agent
+sudo -u patent -H git clone git@github.com:YOUR_ORG/YOUR_PRIVATE_REPO.git /srv/patent_agent
 ```
 
 If using a Git host other than GitHub, replace the clone URL. The repository's `deployment/civo` files are used below.
@@ -102,9 +164,9 @@ If using a Git host other than GitHub, replace the clone URL. The repository's `
 The frontend's Vite packages require Node `^20.19.0 || >=22.12.0`. Install Node 22 with NVM for the `patent` account (NVM is per-user and is used only for building):
 
 ```bash
-sudo -u patent -H bash -lc 'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash'
-sudo -u patent -H bash -lc 'source ~/.bashrc && nvm install 22 && nvm alias default 22'
-sudo -u patent -H bash -lc 'cd /srv/patent_agent/web_portal/frontend && nvm use 22 && node --version && npm ci && npm run build'
+sudo -u patent -H bash -lc 'cd /home/patent && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash'
+sudo -u patent -H bash -lc 'cd /home/patent && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install 22 && nvm alias default 22'
+sudo -u patent -H bash -lc 'cd /home/patent && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && cd /srv/patent_agent/web_portal/frontend && nvm use 22 && node --version && npm ci && npm run build'
 ```
 
 The build output is `/srv/patent_agent/web_portal/frontend/dist`; Nginx serves it directly.
@@ -122,7 +184,7 @@ sudo install -d -o patent -g patent -m 0750 /srv/patent_agent/data
 Install CPU PyTorch for the current CPU embedding implementation, then install the rest of the root requirements while omitting the three CUDA-specific pins:
 
 ```bash
-grep -Ev '^(torch|torchaudio|torchvision)([<=>].*)?$' /srv/patent_agent/requirements.txt > /tmp/patent-agent-requirements-cpu.txt
+sudo grep -Ev '^(torch|torchaudio|torchvision)([<=>].*)?$' /srv/patent_agent/requirements.txt > /tmp/patent-agent-requirements-cpu.txt
 sudo -u patent /srv/patent_agent/.venv-ai/bin/python -m pip install --upgrade pip wheel
 sudo -u patent /srv/patent_agent/.venv-ai/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 sudo -u patent /srv/patent_agent/.venv-ai/bin/python -m pip install -r /tmp/patent-agent-requirements-cpu.txt
@@ -261,25 +323,38 @@ The file uploads and reports still need the separate directory copies above.
 
 ## 10. Migrate Django and start services
 
-On the VM:
+On the VM, load the protected environment file for each management command (systemd does this automatically for the running services):
 
 ```bash
-sudo -u patent /srv/patent_agent/.venv-portal/bin/python /srv/patent_agent/web_portal/manage.py migrate
+sudo -u patent -H bash -lc 'cd /home/patent && set -a && . /etc/patent-agent.env && set +a && cd /srv/patent_agent/web_portal && /srv/patent_agent/.venv-portal/bin/python manage.py migrate'
 ```
 
 If you exported portal records, load them after migrations:
 
 ```bash
-sudo cp /tmp/portal-data.json /srv/patent_agent/portal-data.json
-sudo chown patent:patent /srv/patent_agent/portal-data.json
-sudo -u patent /srv/patent_agent/.venv-portal/bin/python /srv/patent_agent/web_portal/manage.py loaddata /srv/patent_agent/portal-data.json
+sudo install -o patent -g patent -m 0600 /tmp/portal-data.json /srv/patent_agent/portal-data.json
+sudo -u patent -H bash -lc 'cd /home/patent && set -a && . /etc/patent-agent.env && set +a && cd /srv/patent_agent/web_portal && /srv/patent_agent/.venv-portal/bin/python manage.py loaddata /srv/patent_agent/portal-data.json'
 ```
 
-Collect Django admin assets and create a superuser only when the database is new:
+Collect Django admin assets:
 
 ```bash
-sudo -u patent /srv/patent_agent/.venv-portal/bin/python /srv/patent_agent/web_portal/manage.py collectstatic --noinput
-sudo -u patent /srv/patent_agent/.venv-portal/bin/python /srv/patent_agent/web_portal/manage.py createsuperuser
+sudo -u patent -H bash -lc 'cd /home/patent && set -a && . /etc/patent-agent.env && set +a && cd /srv/patent_agent/web_portal && /srv/patent_agent/.venv-portal/bin/python manage.py collectstatic --noinput'
+```
+
+The fixture may already include your local superuser. Create one only if the migrated database has no administrator account:
+
+```bash
+sudo -u patent -H bash -lc 'cd /home/patent && set -a && . /etc/patent-agent.env && set +a && cd /srv/patent_agent/web_portal && /srv/patent_agent/.venv-portal/bin/python manage.py createsuperuser'
+```
+
+Nginx serves the React build and Django static files from the private repository tree. Give its `www-data` user traversal access to parent directories and read access only to those static files; this leaves `/etc/patent-agent.env` inaccessible to Nginx:
+
+```bash
+sudo apt install -y acl
+sudo setfacl -m u:www-data:--x /srv/patent_agent /srv/patent_agent/web_portal /srv/patent_agent/web_portal/frontend
+sudo setfacl -R -m u:www-data:rX /srv/patent_agent/web_portal/frontend/dist /srv/patent_agent/web_portal/staticfiles
+sudo setfacl -m d:u:www-data:rX /srv/patent_agent/web_portal/frontend/dist /srv/patent_agent/web_portal/staticfiles
 ```
 
 Install the checked-in systemd services:
