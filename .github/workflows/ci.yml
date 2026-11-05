@@ -35,7 +35,7 @@ jobs:
     name: Django and Python checks
     runs-on: ubuntu-latest
     env:
-      DATABASE_URL: sqlite:///:memory:
+      DATABASE_URL: "sqlite:///:memory:"
       DJANGO_DEBUG: "true"
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
       SECURE_SSL_REDIRECT: "false"
