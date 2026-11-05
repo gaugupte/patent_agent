@@ -149,7 +149,8 @@ def create_customer(request):
     if not name or len(name) > 160:
         return JsonResponse({"detail": "Enter a customer name up to 160 characters."}, status=400)
     try:
-        customer = Customer.objects.create(organization=request.user.organization, name=name)
+        with transaction.atomic():
+            customer = Customer.objects.create(organization=request.user.organization, name=name)
     except IntegrityError:
         return JsonResponse({"detail": "A customer with that name already exists in your organization."}, status=409)
     return JsonResponse({"customer": _customer_json(customer)}, status=201)
