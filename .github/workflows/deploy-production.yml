@@ -1,0 +1,64 @@
+name: Deploy to Civo Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_production_deploy:
+        description: Deploy this main-branch commit to the Civo production VM
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Run CI before deployment
+    uses: ./.github/workflows/ci.yml
+
+  deploy-production:
+    name: Manual production deployment
+    needs: ci
+    if: github.ref == 'refs/heads/main' && inputs.confirm_production_deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: civo-production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Deploy and verify with rollback on failure
+        env:
+          DEPLOY_HOST: ${{ secrets.CIVO_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.CIVO_DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.CIVO_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.CIVO_DEPLOY_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required GitHub Actions secret: $name" >&2
+              exit 1
+            fi
+          done
+
+          key_file="$(mktemp)"
+          known_hosts_file="$(mktemp)"
+          trap 'rm -f "$key_file" "$known_hosts_file"' EXIT
+          chmod 600 "$key_file" "$known_hosts_file"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_file"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$known_hosts_file"
+
+          ssh \
+            -i "$key_file" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$known_hosts_file" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo -n bash -s -- $GITHUB_SHA" \
+            < deployment/civo/deploy-release.sh
