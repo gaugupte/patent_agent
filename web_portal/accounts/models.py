@@ -75,7 +75,9 @@ class SubscriptionPlan(models.Model):
     billing_interval = models.CharField(max_length=12, choices=BillingInterval.choices)
     price_per_seat = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal("0"))])
     discount_percent = models.DecimalField(
-        max_digits=5, decimal_places=2, default=Decimal("0"),
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("0"),
         validators=[MinValueValidator(Decimal("0")), MaxValueValidator(Decimal("100"))],
     )
     is_active = models.BooleanField(default=True)
@@ -148,6 +150,25 @@ class ActivePortalSession(models.Model):
 
     def __str__(self):
         return f"Active portal session for {self.user}"
+
+
+"""
+  ActivePortalSession is a Django database model that records the browser session currently allowed for a portal user.
+    - class ActivePortalSession(models.Model) defines a model, which Django maps to a database table.
+    - The docstring describes its purpose: track one allowed browser session per user.
+    - user = models.OneToOneField(...) links each record to one user. Because it’s one-to-one, a user can have at most 
+        one ActivePortalSession record. If the user is deleted, on_delete=models.CASCADE deletes the corresponding session
+        record too. 
+        - related_name="active_portal_session" lets code access the record from the user, for example 
+        user.active_portal_session.
+    - session_key = models.CharField(max_length=40, unique=True) stores the Django session key for the allowed browser.
+      unique=True prevents the same key being assigned to multiple records.
+    - updated_at = models.DateTimeField(auto_now=True) stores the time the record was last saved. Django updates it 
+        automatically on each save.
+    - __str__ controls the human-readable representation of the object, such as Active portal session for alice.
+    When a user signs in elsewhere, the app can compare the browser’s session key with this record and 
+    reject or revoke a session that doesn’t match.    
+"""
 
 
 class RegistrationIntent(models.Model):
