@@ -47,6 +47,15 @@ Configure Google OAuth through environment variables; keep client credentials ou
 
 
 # =================================================================================================================
+running test
+
+$env:DATABASE_URL = "sqlite:///:memory:"
+python web_portal/manage.py test accounts.tests patents.tests
+
+
+python -m pytest
+
+# =================================================================================================================
 
 
 
