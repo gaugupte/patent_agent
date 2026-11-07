@@ -1,3 +1,4 @@
+# Patent API tests cover authentication, tenant boundaries, upload validation, and analysis.
 import json
 from datetime import timedelta
 from unittest.mock import patch
@@ -10,12 +11,14 @@ from django.utils import timezone
 from patents.models import Customer, Invention
 
 
+# Anonymous users must not be able to read customer records.
 def test_protected_customer_endpoint_rejects_anonymous_user(client):
     response = client.get(reverse("customers"))
 
     assert response.status_code == 401
 
 
+# Users should see customers from their own organization and no other tenant's data.
 def test_customer_list_contains_only_current_organizations_customers(authenticated_client, customer):
     response = authenticated_client.get(reverse("customers"))
 
@@ -24,6 +27,7 @@ def test_customer_list_contains_only_current_organizations_customers(authenticat
     assert "Customer B" not in response.content.decode()
 
 
+# Trial expiration should block access even when the user is already authenticated.
 def test_expired_trial_cannot_access_customer_data(authenticated_client, portal_user):
     portal_user.trial_ends_at = timezone.now() - timedelta(seconds=1)
     portal_user.save(update_fields=["trial_ends_at"])
@@ -34,6 +38,7 @@ def test_expired_trial_cannot_access_customer_data(authenticated_client, portal_
     assert "trial has ended" in response.json()["detail"]
 
 
+# Customer names are unique within an organization; duplicate submissions return a conflict.
 def test_duplicate_customer_name_is_rejected_without_duplicate_row(
     authenticated_client, organization, customer
 ):
@@ -47,6 +52,7 @@ def test_duplicate_customer_name_is_rejected_without_duplicate_row(
     assert Customer.objects.filter(organization=organization, name="Customer A").count() == 1
 
 
+# Prevent creating an invention under a customer owned by another organization.
 def test_cannot_create_invention_for_another_organizations_customer(authenticated_client, other_customer):
     response = authenticated_client.post(
         reverse("invention-create"),
@@ -57,6 +63,7 @@ def test_cannot_create_invention_for_another_organizations_customer(authenticate
     assert Invention.objects.count() == 0
 
 
+# Reject unsupported file types before invoking the potentially expensive analysis pipeline.
 def test_non_text_upload_is_rejected_before_analysis(authenticated_client, customer):
     with patch("patents.api._run_analysis") as analyze:
         response = authenticated_client.post(
@@ -69,6 +76,7 @@ def test_non_text_upload_is_rejected_before_analysis(authenticated_client, custo
     analyze.assert_not_called()
 
 
+# Text files must decode as UTF-8 before their contents are processed.
 def test_non_utf8_text_upload_is_rejected(authenticated_client, customer):
     invalid_upload = upload("spec.txt", b"\xff\xfe")
 
@@ -82,6 +90,7 @@ def test_non_utf8_text_upload_is_rejected(authenticated_client, customer):
     assert Invention.objects.count() == 0
 
 
+# Exercise both parameter values against the configured maximum upload size.
 @pytest.mark.parametrize("content", [b"12345", b"123456789"])
 def test_upload_above_configured_size_limit_is_rejected(
     authenticated_client, customer, settings, content
@@ -98,6 +107,7 @@ def test_upload_above_configured_size_limit_is_rejected(
     assert Invention.objects.count() == 0
 
 
+# A valid IDF should be persisted and passed to the analysis function exactly once.
 def test_valid_idf_is_saved_and_sent_to_analysis(authenticated_client, customer):
     with patch("patents.api._run_analysis", return_value=True) as analyze:
         response = authenticated_client.post(
@@ -118,6 +128,7 @@ def test_valid_idf_is_saved_and_sent_to_analysis(authenticated_client, customer)
     analyze.assert_called_once_with(version)
 
 
+# Tenant-scoped detail lookup should hide another organization's invention as not found.
 def test_invention_detail_does_not_disclose_another_organization(authenticated_client, other_customer):
     other_invention = Invention.objects.create(customer=other_customer, title="Secret")
 
@@ -127,4 +138,5 @@ def test_invention_detail_does_not_disclose_another_organization(authenticated_c
 
 
 def upload(name, content=b"Valid UTF-8 IDF content\n"):
+    # Build an in-memory multipart upload with a text MIME type for API tests.
     return SimpleUploadedFile(name, content, content_type="text/plain")

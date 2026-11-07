@@ -48,12 +48,14 @@ jobs:
           cache-dependency-path: requirements-test.txt
       - run: python -m pip install -r requirements-test.txt
       - name: Check Python syntax
+      # compiles Python source files (.py) into bytecode (.pyc) files to make modules load faster on future runs.
         run: python -m compileall -q app.py config graph ingestion services web_portal
+      # runs a suite of diagnostic checks on your Django application to detect common configuration errors, database issues, and security vulnerabilities before you deploy or run the server.
       - name: Check Django configuration
         run: python web_portal/manage.py check
       - name: Run portal tests
         run: pytest
-      # Parse deployment scripts without changing or executing the production VM.
+      # Parse deployment scripts without changing or executing on the production VM. -n: Stands for "noexec" (no execution). 
       - name: Check deployment shell script syntax
         run: |
           bash -n deployment/civo/setup-vm.sh
