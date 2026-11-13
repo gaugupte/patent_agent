@@ -22,7 +22,24 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 # Database configuration
 # ---------------------------------------------------------
 
-DATABASE_URL = os.getenv("AUDIT_DATABASE_URL", "sqlite:///./patent_agent.db")
+# Keep local audit storage configurable, and default production audit storage to
+# the portal database. Ignore a legacy production SQLite override so upgrades
+# also move new audit writes to PostgreSQL.
+PORTAL_DATABASE_URL = os.getenv("DATABASE_URL")
+AUDIT_DATABASE_URL = os.getenv("AUDIT_DATABASE_URL")
+IS_PRODUCTION = os.getenv("DJANGO_DEBUG", "true").lower() not in {"1", "true", "yes"}
+if IS_PRODUCTION and PORTAL_DATABASE_URL and PORTAL_DATABASE_URL.startswith(("postgres://", "postgresql://")):
+    DATABASE_URL = (
+        AUDIT_DATABASE_URL
+        if AUDIT_DATABASE_URL and AUDIT_DATABASE_URL.startswith(("postgres://", "postgresql://"))
+        else PORTAL_DATABASE_URL
+    )
+else:
+    DATABASE_URL = AUDIT_DATABASE_URL or PORTAL_DATABASE_URL or "sqlite:///./patent_agent.db"
+if DATABASE_URL.startswith(("postgres://", "postgresql://")):
+    # SQLAlchemy otherwise defaults to psycopg2; the project installs psycopg 3.
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
 Base = declarative_base()
 import uuid
@@ -43,14 +60,15 @@ class AuditLog(Base):
 
 
 def init_db():
-    engine = create_engine(
-        DATABASE_URL,
-        pool_size=5,
-        max_overflow=10,
-        pool_timeout=30,
-        pool_recycle=1800,
-        connect_args={"check_same_thread": False},
-    )
+    engine_options = {
+        "pool_size": 5,
+        "max_overflow": 10,
+        "pool_timeout": 30,
+        "pool_recycle": 1800,
+    }
+    if DATABASE_URL.startswith("sqlite:"):
+        engine_options["connect_args"] = {"check_same_thread": False}
+    engine = create_engine(DATABASE_URL, **engine_options)
     # Create tables here
     Base.metadata.create_all(
         engine
