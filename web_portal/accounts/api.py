@@ -195,8 +195,6 @@ def request_email_code(request):
 
     now = timezone.now()
     ip = request.META.get("REMOTE_ADDR")
-    if EmailLoginCode.objects.filter(email__iexact=email, created_at__gt=now - timedelta(seconds=60)).exists():
-        return JsonResponse({"detail": "If the address can be used, a code has been sent. Wait a minute before requesting another."}, status=429)
     if ip and EmailLoginCode.objects.filter(request_ip=ip, created_at__gt=now - timedelta(hours=1)).count() >= 10:
         return JsonResponse({"detail": "Too many code requests. Try again later."}, status=429)
 
@@ -216,6 +214,8 @@ def request_email_code(request):
         challenge.delete()
         logger.exception("Could not send a portal sign-in code")
         return JsonResponse({"detail": "The email could not be sent. Please try again later."}, status=503)
+    # A newly issued code replaces any earlier pending code for this address.
+    EmailLoginCode.objects.filter(email__iexact=email, consumed_at__isnull=True).exclude(pk=challenge.pk).update(consumed_at=now)
     return JsonResponse({"detail": "If the address can be used, a verification code has been sent."})
 
 
@@ -241,11 +241,9 @@ def verify_email_code(request):
         intent = RegistrationIntent.objects.filter(pk=registration_id, email__iexact=email).first()
         if intent is None:
             return JsonResponse({"detail": "Registration details were not found. Start registration again."}, status=400)
-        is_paid_individual = (
-            intent.access_type == Organization.AccessType.INDIVIDUAL and not intent.is_trial
-        )
-        if is_paid_individual:
-            pending = request.session.get("validated_paid_registration")
+        requires_password_login = not intent.is_trial
+        if requires_password_login:
+            pending = request.session.get("validated_password_registration")
             if not isinstance(pending, dict) or pending.get("intent_id") != str(intent.pk) or pending.get("email") != email:
                 return JsonResponse({"detail": "Your registration details expired. Start registration again."}, status=400)
             try:
@@ -259,7 +257,7 @@ def verify_email_code(request):
                 return JsonResponse({"detail": str(exc)}, status=409)
             challenge.consumed_at = timezone.now()
             challenge.save(update_fields=["consumed_at"])
-            request.session.pop("validated_paid_registration", None)
+            request.session.pop("validated_password_registration", None)
             if not _login_single_session(request, user):
                 return JsonResponse({"detail": "Your account was created. Sign in with your username and password."}, status=409)
             return _user_payload(user)
@@ -294,6 +292,8 @@ def verify_email_code(request):
 
 @require_GET
 def google_login(request):
+    if request.GET.get("registration_intent"):
+        return HttpResponseRedirect(_frontend_redirect("/register", {"auth_error": "google_signup_disabled"}))
     client_id = getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "")
     if not client_id or not getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", ""):
         target = "/register" if request.GET.get("registration_intent") else "/login"

@@ -137,6 +137,25 @@ def start_registration(request):
             validated_password_hash = make_password(password)
     elif not organization_name or len(organization_name) > 160:
         return JsonResponse({"detail": "Enter an organization name up to 160 characters."}, status=400)
+    if access_type == Organization.AccessType.ORGANIZATION:
+        if not username or len(username) > 16:
+            return JsonResponse({"detail": "Choose a username with 1 to 16 characters."}, status=400)
+        try:
+            PortalUser._meta.get_field("username").run_validators(username)
+        except ValidationError as exc:
+            return JsonResponse({"detail": " ".join(exc.messages)}, status=400)
+        if PortalUser.objects.filter(username__iexact=username).exists():
+            return JsonResponse({"detail": "That username is already taken. Choose another."}, status=409)
+        if not password:
+            return JsonResponse({"detail": "Create a password before requesting the email confirmation code."}, status=400)
+        if password != password_confirmation:
+            return JsonResponse({"detail": "The password and confirmation do not match."}, status=400)
+        candidate = PortalUser(username=username, email=email)
+        try:
+            validate_password(password, candidate)
+        except ValidationError as exc:
+            return JsonResponse({"detail": " ".join(exc.messages)}, status=400)
+        validated_password_hash = make_password(password)
     if not 1 <= seat_count <= 500:
         return JsonResponse({"detail": "Choose between 1 and 500 seats."}, status=400)
     if PortalUser.objects.filter(email__iexact=email).exists():
@@ -160,8 +179,8 @@ def start_registration(request):
         is_trial=is_trial,
         expires_at=timezone.now() + timedelta(hours=1),
     )
-    if access_type == Organization.AccessType.INDIVIDUAL and not is_trial:
-        request.session["validated_paid_registration"] = {
+    if (access_type == Organization.AccessType.INDIVIDUAL and not is_trial) or access_type == Organization.AccessType.ORGANIZATION:
+        request.session["validated_password_registration"] = {
             "intent_id": str(intent.pk),
             "email": email,
             "username": username,
@@ -169,7 +188,7 @@ def start_registration(request):
         }
         request.session.set_expiry(3600)
     else:
-        request.session.pop("validated_paid_registration", None)
+        request.session.pop("validated_password_registration", None)
     return JsonResponse({
         "registration_intent": str(intent.pk),
         "payment_mode": "simulation",
@@ -195,8 +214,8 @@ def complete_registration(intent, email, first_name="", last_name="", username="
         now = timezone.now()
         if intent.is_trial and (intent.access_type != Organization.AccessType.INDIVIDUAL or intent.plan_id):
             raise ValueError("This trial registration is invalid. Start again.")
-        individual_paid = intent.access_type == Organization.AccessType.INDIVIDUAL and not intent.is_trial
-        if individual_paid:
+        has_password_login = not intent.is_trial
+        if has_password_login:
             username = str(username or "").strip()
             if not username or len(username) > 16:
                 raise ValueError("Choose a username with 1 to 16 characters.")
@@ -209,13 +228,13 @@ def complete_registration(intent, email, first_name="", last_name="", username="
             if not password_hash:
                 raise ValueError("Password setup details are missing. Start registration again.")
         user = PortalUser(
-            username=username if individual_paid else _username_for_email(email), email=email,
+            username=username if has_password_login else _username_for_email(email), email=email,
             first_name=first_name[:150], last_name=last_name[:150],
             role=PortalUser.Role.ORGANIZATION_ADMIN,
             trial_started_at=now if intent.is_trial else None,
             trial_ends_at=now + timedelta(days=7) if intent.is_trial else None,
         )
-        if individual_paid:
+        if has_password_login:
             user.password = password_hash
         else:
             user.set_unusable_password()
