@@ -167,9 +167,9 @@ These are framework-managed tables; they are not defined in the `Customer`, `Inv
 
 ## Separate audit table
 
-### `audit_log` in `patent_agent.db`
+### `audit_log` table
 
-Defined with SQLAlchemy in `services/utils.py`. This is separate from Django's portal database and is currently stored in a SQLite file named `patent_agent.db` relative to the FastAPI process's working directory.
+Defined with SQLAlchemy in `services/utils.py`. Locally it defaults to a SQLite file named `patent_agent.db` relative to the FastAPI process's working directory. In production it uses `AUDIT_DATABASE_URL` when set, otherwise it falls back to `DATABASE_URL`, so audit rows are stored in the same PostgreSQL database as portal records.
 
 | Column | Logical type | Purpose |
 |---|---|---|
@@ -217,6 +217,6 @@ The graph currently compiles with LangGraph's in-memory `MemorySaver` checkpoint
 ## Database locations and backend selection
 
 - Django defaults to `web_portal/portal.sqlite3` when `DATABASE_URL` is unset. The settings also support a PostgreSQL URL.
-- Audit logging uses its own SQLite database, `patent_agent.db`; it does not currently follow Django's `DATABASE_URL` setting.
+- Audit logging defaults to SQLite locally and uses PostgreSQL in production through `DATABASE_URL` (or an explicit `AUDIT_DATABASE_URL` override).
 - CPC vectors are stored under `data/chroma_db/full_cpc_db`.
 - Uploaded IDF files and DOCX reports are stored on the filesystem at configured media/report roots; database rows keep their paths.

@@ -241,7 +241,7 @@ The following are created or used at runtime and may not appear in the source in
 - `data/chroma_db/full_cpc_db/`: persistent CPC Chroma vector collection.
 - `data/reports/`: generated DOCX analysis reports.
 - `data/portal_media/`: uploaded IDF documents managed by Django.
-- `patent_agent.db`: SQLite audit database created by `services/utils.py`.
+- Local `patent_agent.db`: SQLite audit database created by `services/utils.py`; production audit rows use PostgreSQL.
 - `web_portal/portal.sqlite3`: default Django database; PostgreSQL can be selected with `DATABASE_URL`.
 - `web_portal/frontend/node_modules/` and `web_portal/frontend/dist/`: npm dependencies and production build output.
 
