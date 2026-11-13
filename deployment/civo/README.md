@@ -12,6 +12,8 @@ $env:DATABASE_URL = "sqlite:///:memory:"
 python -m pytest
 ```
 
+## ================================================================================================
+
 CI runs the same pytest suite as part of the backend job. The test dependencies are separate from the production portal requirements.
 
 ## Quick path: prepare a new VM with scripts
@@ -20,13 +22,28 @@ For a **new Ubuntu 24.04 VM**, the scripts automate dependency installation, the
 
 1. Complete sections 1–4 below: prepare the private source revision, create the VM and firewall, create the `patent` account and `/srv/patent_agent`, set up its read-only Git deploy key, and clone the repository there. Point your DNS A record at the new VM and wait until it resolves. Do not start the application services manually.
 2. From Windows PowerShell in your local project root, transfer the ignored application data and export the local portal database to a fixture:
-
+   # ssh-keygen -R 212.2.249.66 
+   #if the key error
    ```powershell
    .\deployment\civo\prepare-data.ps1 -HostName patentdesk.gvgconsulting.in
    ```
 
    Replace the hostname with the VM's DNS name (or public IP). Add `-InitialUser <image-user>` if the VM image uses a different initial SSH username. The command uses your existing SSH access and local Python environment.
 3. SSH to the VM and run the setup once:
+
+sudo apt-get update
+sudo apt-get install -y git openssh-client
+id patent >/dev/null 2>&1 || sudo useradd --system --home-dir /home/patent --create-home --shell /bin/bash patent
+sudo install -d -o patent -g patent -m 0700 /home/patent/.ssh
+sudo install -d -o patent -g patent -m 0750 /srv/patent_agent
+
+sudo -u patent -H ssh-keygen -t ed25519 -f /home/patent/.ssh/id_ed25519 -N "" -C "patent-agent-readonly-deploy-key"
+sudo cat /home/patent/.ssh/id_ed25519.pub
+
+#copy Add that public key to the GitHub repository’s Settings → Deploy keys with read-only access. Then clone:
+
+sudo -u patent -H git clone git@github.com:gaugupte/patent_agent.git /srv/patent_agent
+
 
    ```bash
    sudo bash /srv/patent_agent/deployment/civo/setup-vm.sh
@@ -60,7 +77,7 @@ Before using the job:
 4. The workflow uses a GitHub-hosted runner, so that runner must be able to reach the VM on TCP 22. The current firewall rule that allows only your own IP will block it. GitHub-hosted runner IP ranges are large and change over time; GitHub does not recommend using the standard hosted-runner ranges as internal allowlists. Arrange a private network route or another reviewed access method before running the job. This runbook does not open SSH to the internet.
 5. In GitHub, open **Actions → Deploy to Civo Production → Run workflow**, select `main`, check **Deploy this main-branch commit to the Civo production VM**, and start it. The deploy job begins only after frontend build, backend tests/checks, and PowerShell syntax checks pass.
 
-The release script stops the portal and API, saves a custom-format PostgreSQL dump under `/var/backups/patent-agent/`, updates dependencies and the frontend, applies migrations, collects static assets, restarts services, then checks FastAPI, the portal health endpoint, and the HTTPS homepage. A deployment failure triggers a rollback attempt: restore the previous Git commit and the pre-deploy PostgreSQL dump, rebuild, and restart. The failed workflow remains failed even if rollback succeeds, and prints the backup path. Check service logs after either outcome. This rollback does not restore Chroma, uploaded files, reports, or audit SQLite; the deployment leaves those persistent data paths alone. Keep a separate off-VM backup for disaster recovery, and remove old release dumps only after you have verified a newer backup.
+The release script stops the portal and API, saves a custom-format PostgreSQL dump under `/var/backups/patent-agent/`, updates dependencies and the frontend, applies migrations, collects static assets, restarts services, then checks FastAPI, the portal health endpoint, and the HTTPS homepage. A deployment failure triggers a rollback attempt: restore the previous Git commit and the pre-deploy PostgreSQL dump, rebuild, and restart. The failed workflow remains failed even if rollback succeeds, and prints the backup path. Check service logs after either outcome. This rollback does not restore Chroma, uploaded files, or reports; the deployment leaves those persistent data paths alone. Portal and audit records are included in the PostgreSQL dump. Keep a separate off-VM backup for disaster recovery, and remove old release dumps only after you have verified a newer backup.
 
 The first run can cause downtime while services stop, dependencies install, migrations run, and health checks complete. Database restoration reverts portal database changes made after the backup, so the job should be started during a quiet period. Database migrations that irreversibly change external data still need a migration-specific recovery plan.
 
@@ -307,17 +324,7 @@ python web_portal/manage.py dumpdata --natural-foreign --natural-primary --exclu
 scp .\portal-data.json <initial-linux-user>@<VM_PUBLIC_IP>:/tmp/portal-data.json
 ```
 
-The audit SQLite database `patent_agent.db` is also ignored by Git; copy it separately if its audit history should be preserved. From PowerShell, if the file exists:
-
-```powershell
-scp .\patent_agent.db <initial-linux-user>@<VM_PUBLIC_IP>:/tmp/patent_agent.db
-```
-
-On the VM, place it where the audit service expects it and set ownership:
-
-```bash
-sudo install -o patent -g patent -m 0640 /tmp/patent_agent.db /srv/patent_agent/patent_agent.db
-```
+Audit history created before this deployment remains in the local `patent_agent.db` file. New production audit records are written to PostgreSQL. Import existing history separately if it needs to be retained in production.
 
 The file uploads and reports still need the separate directory copies above.
 
